@@ -1,0 +1,16 @@
+node_modules/
+.next/
+out/
+.env.local
+.env.*.local
+.DS_Store
+*.tsbuildinfo
+supabase/.temp/
+# Private exports and database dumps belong outside the code repository.
+my-money-backup-*.json
+my-money-transactions-*.csv
+*.dump
+*.backup
+*.sql.gz
+/backups/
+/exports/

@@ -1,0 +1,733 @@
+"use client";
+
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { useSearchParams } from "next/navigation";
+import { AlertCard, GoalCard, LineChart, StatCard, formatMoney } from "@/components";
+import { useFinance } from "@/app/FinanceApp";
+import { completeGoal, deleteRow, exportBackupSnapshot, insertRow, quickSave, setGoalAllocations, updateRow, type GoalPayment, type PostTransactionInput } from "@/lib/data";
+import { BACKUP_TABLES, decryptBackup, downloadText, encryptBackup, transactionsCsv, type BackupPayload } from "@/lib/backup";
+import { clearOfflineScope } from "@/lib/offline";
+import { availableCash, balancesOn, fundedForGoal, goalAllocationValue, increasedCashReservation, monthLabel, monthStart, monthStartFromInput, nextMonth, paiseFromRupees, projectedGoalDate, rupeesFromPaise, todayInIndia, totalsOn } from "@/lib/finance";
+import { actualForPlanItem, buildAlerts, filterActiveAlerts } from "@/lib/planning";
+import type { Account, FinanceData, Goal, MoneyTransaction, PlanItem, RecurringOccurrence, TransactionKind } from "@/lib/types";
+
+function errorText(error: unknown): string { return error instanceof Error ? error.message : String(error); }
+function amountInput(value: string, setter: (value: string) => void, label = "Amount (₹)") {
+  return <label className="field">{label}<input className="input" type="number" min="0" step="0.01" required value={value} onChange={event => setter(event.target.value)} /></label>;
+}
+function accountSelect(accounts: Account[], value: string, setter: (value: string) => void, label = "Account", required = true) {
+  return <label className="field">{label}<select className="select" required={required} value={value} onChange={event => setter(event.target.value)}><option value="">Choose account</option>{accounts.filter(account => account.active).map(account => <option key={account.id} value={account.id}>{account.name} · {account.kind}</option>)}</select></label>;
+}
+function Section({ title, description, children }: { title: string; description?: string; children: React.ReactNode }) {
+  return <section className="surface-card app-section"><div className="section-heading"><div><h2>{title}</h2>{description && <p>{description}</p>}</div></div>{children}</section>;
+}
+function Empty({ text }: { text: string }) { return <p className="empty-state">{text}</p>; }
+
+const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+function MonthPicker({ month, onChange }: { month: string; onChange: (month: string) => void }) {
+  const details = useRef<HTMLDetailsElement>(null);
+  const [year, setYear] = useState(Number(month.slice(0, 4)));
+
+  return <div className="month-picker"><span className="month-picker-label">Month</span>
+    <details ref={details} onToggle={event => { if (event.currentTarget.open) setYear(Number(month.slice(0, 4))); }}>
+      <summary className="input month-picker-trigger" aria-label={`Choose month, currently ${monthLabel(month)}`}>
+        <span>{monthLabel(month)}</span><span aria-hidden="true">▾</span>
+      </summary>
+      <div className="month-picker-panel">
+        <div className="month-picker-year">
+          <button type="button" className="button button-quiet button-small" aria-label="Previous year" disabled={year <= 1000} onClick={() => setYear(value => value - 1)}>←</button>
+          <strong>{year}</strong>
+          <button type="button" className="button button-quiet button-small" aria-label="Next year" disabled={year >= 9999} onClick={() => setYear(value => value + 1)}>→</button>
+        </div>
+        <div className="month-picker-grid">{monthNames.map((name, index) => {
+          const selected = month === `${year}-${String(index + 1).padStart(2, "0")}-01`;
+          return <button type="button" key={name} className={`month-picker-option${selected ? " is-selected" : ""}`} aria-pressed={selected} onClick={() => {
+            onChange(`${year}-${String(index + 1).padStart(2, "0")}-01`);
+            if (details.current) details.current.open = false;
+          }}>{name}</button>;
+        })}</div>
+      </div>
+    </details>
+  </div>;
+}
+
+export function AccountsView() {
+  const { data, ownerId, client, run } = useFinance();
+  const [name, setName] = useState("");
+  const [kind, setKind] = useState<Account["kind"]>("bank");
+  const [opening, setOpening] = useState("0");
+  const [openingOn, setOpeningOn] = useState(todayInIndia());
+  const [valuationAccount, setValuationAccount] = useState("");
+  const [valuationAmount, setValuationAmount] = useState("");
+  const [valuationDate, setValuationDate] = useState(todayInIndia());
+  const [localError, setLocalError] = useState("");
+  const totals = useMemo(() => totalsOn(data), [data]);
+
+  async function createAccount(event: FormEvent) {
+    event.preventDefault(); setLocalError("");
+    try {
+      await run(() => insertRow(client, "accounts", ownerId, {
+        id: crypto.randomUUID(), name: name.trim(), kind,
+        opening_balance_paise: paiseFromRupees(opening), opening_on: openingOn, active: true,
+      }));
+      setName(""); setOpening("0");
+    } catch (error) { setLocalError(errorText(error)); }
+  }
+
+  async function recordValuation(event: FormEvent) {
+    event.preventDefault(); setLocalError("");
+    try {
+      await run(() => insertRow(client, "investment_valuations", ownerId, {
+        id: crypto.randomUUID(), account_id: valuationAccount, as_of_date: valuationDate,
+        market_value_paise: paiseFromRupees(valuationAmount),
+      }));
+      setValuationAmount("");
+    } catch (error) { setLocalError(errorText(error)); }
+  }
+
+  const investmentAccounts = data.accounts.filter(account => account.kind === "investment");
+  return <div className="page-stack">
+    <div className="stat-grid"><StatCard label="Cash and bank" valuePaise={totals.cash} /><StatCard label="Investments" valuePaise={totals.investments} /><StatCard label="Debts" valuePaise={totals.debts} /><StatCard label="Net worth" valuePaise={totals.netWorth} tone="accent" /></div>
+    <Section title="Where your money is" description="Balances come from opening amounts and transactions. Goal reservations are shown separately.">
+      {data.accounts.length === 0 ? <Empty text="Add your first bank, cash, card, loan, or investment account." /> : <div className="table-wrap"><table className="data-table"><thead><tr><th>Account</th><th>Type</th><th>Balance</th><th>Reserved</th><th>Available</th><th></th></tr></thead><tbody>{data.accounts.map(account => {
+        const balance = totals.balances.get(account.id) || 0;
+        const reserved = data.goalAllocations.filter(allocation => allocation.account_id === account.id).reduce((sum, allocation) => sum + goalAllocationValue(allocation, account, balance), 0);
+        const latestValuation = account.kind === "investment" ? data.investmentValuations.filter(item => item.account_id === account.id).sort((a, b) => b.as_of_date.localeCompare(a.as_of_date) || (b.created_at || "").localeCompare(a.created_at || ""))[0] : null;
+        const canArchive = Math.abs(balance) < 1 && !data.goalAllocations.some(allocation => allocation.account_id === account.id);
+        return <tr key={account.id}><td><strong>{account.name}</strong>{latestValuation && <small className="muted"> · valued {latestValuation.as_of_date}</small>}{!account.active && <span className="pill">Archived</span>}</td><td>{account.kind}</td><td>{formatMoney(balance)}</td><td>{formatMoney(reserved)}</td><td>{account.kind === "bank" || account.kind === "cash" ? formatMoney(availableCash(account, data, totals.balances)) : "—"}</td><td>{account.active && <button className="button button-quiet" disabled={!canArchive} title={canArchive ? "Archive this empty account" : "Bring the balance to zero and release goal allocations first"} onClick={() => { if (window.confirm(`Archive ${account.name}? Its history stays in reports.`)) void run(() => updateRow(client, "accounts", account.id, { active: false }, account.version)).catch(() => {}); }}>Archive</button>}</td></tr>;
+      })}</tbody></table></div>}
+    </Section>
+    <div className="two-column-grid">
+      <Section title="Add an account" description="Enter the amount on the date you start tracking it. Opening balances are not income."><form className="form-stack" onSubmit={createAccount}>
+        <label className="field">Name<input className="input" required maxLength={80} placeholder="e.g. Savings Account" value={name} onChange={e => setName(e.target.value)} /></label>
+        <label className="field">Type<select className="select" value={kind} onChange={e => setKind(e.target.value as Account["kind"])}><option value="bank">Bank</option><option value="cash">Cash</option><option value="investment">Investment holding</option><option value="card">Credit card debt</option><option value="loan">Loan debt</option></select></label>
+        {amountInput(opening, setOpening, "Opening balance / amount owed (₹)")}
+        <label className="field">As of date<input className="input" type="date" max={todayInIndia()} required value={openingOn} onChange={e => setOpeningOn(e.target.value)} /></label>
+        <button className="button button-primary">Add account</button>
+      </form></Section>
+      <Section title="Update investment value" description="Enter a manual current value. The app will show the valuation date; this is not a live market quote.">
+        {investmentAccounts.length ? <form className="form-stack" onSubmit={recordValuation}>
+          {accountSelect(investmentAccounts, valuationAccount, setValuationAccount, "Investment holding")}
+          {amountInput(valuationAmount, setValuationAmount, "Current market value (₹)")}
+          <label className="field">Valued on<input className="input" type="date" max={todayInIndia()} required value={valuationDate} onChange={e => setValuationDate(e.target.value)} /></label>
+          <button className="button button-secondary">Save valuation</button>
+        </form> : <Empty text="Add an investment holding to record its value." />}
+      </Section>
+    </div>
+    {localError && <p className="form-error" role="alert">{localError}</p>}
+  </div>;
+}
+
+const kindLabels: Record<TransactionKind, string> = {
+  income: "Income", expense: "Expense", transfer: "Transfer", investment_contribution: "Investment contribution",
+  card_payment: "Card payment", loan_payment: "Loan payment", adjustment_increase: "Balance increase", adjustment_decrease: "Balance decrease",
+  reversal: "Reversal",
+};
+
+export function TransactionsView() {
+  const { data, pending, client, run, transact, retryPending, discardPending, syncStatus } = useFinance();
+  const params = useSearchParams();
+  const [showForm, setShowForm] = useState(params.get("add") === "1");
+  const [kind, setKind] = useState<TransactionKind>("expense");
+  const [amount, setAmount] = useState("");
+  const [date, setDate] = useState(todayInIndia());
+  const [source, setSource] = useState("");
+  const [destination, setDestination] = useState("");
+  const [category, setCategory] = useState("");
+  const [note, setNote] = useState("");
+  const [method, setMethod] = useState("");
+  const [interest, setInterest] = useState("0");
+  const [query, setQuery] = useState("");
+  const [localError, setLocalError] = useState("");
+  const [editing, setEditing] = useState<MoneyTransaction | null>(null);
+  const accounts = data.accounts.filter(account => account.active);
+  const needSource = kind !== "income";
+  const needDestination = ["income", "transfer", "investment_contribution", "card_payment", "loan_payment"].includes(kind);
+  const needCategory = kind === "income" || kind === "expense" || (kind === "loan_payment" && Number(interest) > 0);
+  const relevantCategories = data.categories.filter(item => item.kind === (kind === "income" ? "income" : "expense") && item.active);
+
+  async function submit(event: FormEvent) {
+    event.preventDefault(); setLocalError("");
+    try {
+      const input: PostTransactionInput = {
+        occurred_on: date, kind, amount_paise: paiseFromRupees(amount),
+        source_account_id: needSource ? source : null,
+        destination_account_id: needDestination ? destination : null,
+        category_id: category || null, note: note.trim() || null,
+        interest_paise: kind === "loan_payment" ? paiseFromRupees(interest) : 0,
+        payment_method: method.trim() || null,
+      };
+      if (needCategory && !category) throw new Error("Choose a category for this transaction.");
+      if (source && source === destination) throw new Error("Source and destination accounts must differ.");
+      if (editing) {
+        if (!navigator.onLine) throw new Error("Connect to the internet before correcting an existing transaction.");
+        await run(async () => {
+          const { error } = await client.rpc("correct_transaction", {
+            p_original_id: editing.id,
+            p_reversal_id: crypto.randomUUID(),
+            p_reversal_allocation_changes: [],
+            p_replacement: { ...input, id: crypto.randomUUID() },
+          });
+          if (error) throw error;
+        });
+      } else await transact(input);
+      setAmount(""); setNote(""); setInterest("0"); setShowForm(false); setEditing(null);
+    } catch (error) { setLocalError(errorText(error)); }
+  }
+
+  function openCorrection(transaction: MoneyTransaction) {
+    setEditing(transaction); setKind(transaction.kind); setAmount(rupeesFromPaise(Number(transaction.amount_paise)));
+    setDate(transaction.occurred_on); setSource(transaction.source_account_id || ""); setDestination(transaction.destination_account_id || "");
+    setCategory(transaction.category_id || ""); setNote(transaction.note || ""); setMethod(transaction.payment_method || "");
+    setInterest(rupeesFromPaise(Number(transaction.interest_paise || 0))); setLocalError(""); setShowForm(true);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  async function voidTransaction(transaction: MoneyTransaction) {
+    if (!navigator.onLine) { setLocalError("Connect to the internet before voiding a transaction."); return; }
+    if (!window.confirm(`Void this ${kindLabels[transaction.kind].toLowerCase()} of ${formatMoney(Number(transaction.amount_paise))}? Its original and reversal will stay in the audit history.`)) return;
+    setLocalError("");
+    try { await run(async () => {
+      const { error } = await client.rpc("void_transaction", { p_transaction_id: transaction.id, p_reversal_id: crypto.randomUUID(), p_allocation_changes: [] });
+      if (error) throw error;
+    }); }
+    catch (error) { setLocalError(errorText(error)); }
+  }
+
+  const reversedIds = new Set(data.transactions.filter(item => item.kind === "reversal").map(item => item.reverses_transaction_id));
+  const canVoid = (item: MoneyTransaction) => item.kind !== "reversal" && !reversedIds.has(item.id)
+    && !data.goalAllocationChanges.some(change => change.transaction_id === item.id)
+    && !data.goalCompletionPayments.some(payment => payment.transaction_id === item.id);
+  const canCorrect = (item: MoneyTransaction) => canVoid(item)
+    && !data.recurringOccurrences.some(occurrence => occurrence.actual_transaction_id === item.id)
+    && item.kind !== "transfer" && item.kind !== "investment_contribution";
+
+  const transactions = [...data.transactions]
+    .filter(item => `${kindLabels[item.kind]} ${item.note || ""} ${data.categories.find(category => category.id === item.category_id)?.name || ""}`.toLowerCase().includes(query.toLowerCase()))
+    .sort((a, b) => b.occurred_on.localeCompare(a.occurred_on) || (b.created_at || "").localeCompare(a.created_at || ""));
+  return <div className="page-stack">
+    {pending.length > 0 && <div className="notice-banner"><strong>{pending.length} transaction{pending.length === 1 ? "" : "s"} waiting to sync.</strong> {pending.some(item => item.error) ? "Open the pending list below to review errors." : "They will upload when the connection returns."}</div>}
+    <Section title="Transaction history" description="Transfers and card repayments do not count as new spending.">
+      <div className="section-actions"><input className="input" aria-label="Search transactions" placeholder="Search transactions" value={query} onChange={e => setQuery(e.target.value)} /><button className="button button-primary" onClick={() => { setShowForm(value => !value); setEditing(null); }}>{showForm ? "Close" : "+ Add transaction"}</button></div>
+      {showForm && <form className="form-stack inline-form" onSubmit={submit}>
+        {editing && <div className="notice-banner" role="status">Correcting the selected transaction. Saving will keep the original and add a reversal plus your corrected entry.</div>}
+        <div className="form-grid">
+          <label className="field">Type<select className="select" disabled={Boolean(editing)} value={kind} onChange={e => { setKind(e.target.value as TransactionKind); setSource(""); setDestination(""); setCategory(""); }}>{Object.entries(kindLabels).filter(([value]) => value !== "reversal").map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+          {amountInput(amount, setAmount)}
+          <label className="field">Date<input className="input" type="date" max={todayInIndia()} required value={date} onChange={e => setDate(e.target.value)} /></label>
+          {needSource && accountSelect(accounts.filter(account => kind === "expense" ? ["cash", "bank", "card", "investment"].includes(account.kind) : kind === "adjustment_increase" || kind === "adjustment_decrease" ? true : ["cash", "bank"].includes(account.kind)), source, setSource, kind.startsWith("adjustment") ? "Account to correct" : "From account")}
+          {needDestination && accountSelect(accounts.filter(account => kind === "income" ? ["cash", "bank"].includes(account.kind) : kind === "card_payment" ? account.kind === "card" : kind === "loan_payment" ? account.kind === "loan" : kind === "investment_contribution" ? account.kind === "investment" : ["cash", "bank", "investment"].includes(account.kind)), destination, setDestination, "To account")}
+          {needCategory && <label className="field">Category<select className="select" required value={category} onChange={e => setCategory(e.target.value)}><option value="">Choose category</option>{relevantCategories.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>}
+          {kind === "loan_payment" && amountInput(interest, setInterest, "Interest portion (₹)")}
+          <label className="field">Payment method<input className="input" placeholder="e.g. UPI, card, bank transfer" value={method} onChange={e => setMethod(e.target.value)} /></label>
+          <label className="field">Note<input className="input" value={note} onChange={e => setNote(e.target.value)} /></label>
+        </div>
+        <p className="muted">{syncStatus === "offline" ? "Offline: this will be queued on this device. Totals stay at the last confirmed values until it syncs." : "The balance updates after the server confirms the transaction."}</p>
+        {localError && <p className="form-error" role="alert">{localError}</p>}
+        <button className="button button-primary">{editing ? "Save auditable correction" : "Save transaction"}</button>
+      </form>}
+      {transactions.length === 0 ? <Empty text="No transactions yet. Add your first income or expense." /> : <div className="table-wrap"><table className="data-table"><thead><tr><th>Date</th><th>Type</th><th>Details</th><th>Account</th><th>Amount</th><th>Actions</th></tr></thead><tbody>{transactions.slice(0, 150).map(item => <tr key={item.id}><td>{item.occurred_on}</td><td>{kindLabels[item.kind]}{reversedIds.has(item.id) && <span className="pill">Reversed</span>}</td><td>{item.note || data.categories.find(category => category.id === item.category_id)?.name || "—"}{item.payment_method && <span className="muted"> · {item.payment_method}</span>}</td><td>{data.accounts.find(account => account.id === (item.source_account_id || item.destination_account_id))?.name || "—"}</td><td>{formatMoney(Number(item.amount_paise))}</td><td><span className="list-actions">{canCorrect(item) && <button className="button button-quiet" onClick={() => openCorrection(item)}>Correct</button>}{canVoid(item) && <button className="button button-quiet" onClick={() => void voidTransaction(item)}>Void</button>}</span></td></tr>)}</tbody></table></div>}
+    </Section>
+    {pending.length > 0 && <Section title="Pending on this device" description="These entries are stored locally until Supabase confirms them. Review errors before retrying; discarding cannot be undone."><div className="list-stack">{pending.map(item => <div key={item.id} className="list-row"><span>{item.input.occurred_on} · {kindLabels[item.input.kind]} · {formatMoney(item.input.amount_paise)}</span><span className="list-actions"><span className="pill">{item.error || "Waiting to sync"}</span>{item.error && <button className="button button-secondary" onClick={() => void retryPending(item.id)}>Retry</button>}<button className="button button-quiet" onClick={() => { if (window.confirm("Discard this unsynced transaction from this device? Confirm it was not saved on another device first.")) void discardPending(item.id); }}>Discard</button></span></div>)}</div></Section>}
+  </div>;
+}
+
+const planKinds: PlanItem["kind"][] = ["income", "fixed_expense", "variable_expense", "saving", "investment"];
+const planLabels: Record<PlanItem["kind"], string> = { income: "Expected income", fixed_expense: "Fixed expense", variable_expense: "Category budget", saving: "Goal saving", investment: "Investment contribution" };
+
+export function MonthlyPlanView() {
+  const { data, client, ownerId, run } = useFinance();
+  const [month, setMonth] = useState(monthStart(todayInIndia()));
+  const [name, setName] = useState("");
+  const [kind, setKind] = useState<PlanItem["kind"]>("fixed_expense");
+  const [amount, setAmount] = useState("");
+  const [dueDay, setDueDay] = useState("");
+  const [category, setCategory] = useState("");
+  const [goal, setGoal] = useState("");
+  const [account, setAccount] = useState("");
+  const [recurringTemplate, setRecurringTemplate] = useState("");
+  const [localError, setLocalError] = useState("");
+  const [editingItem, setEditingItem] = useState<string | null>(null);
+  const [editingAmount, setEditingAmount] = useState("");
+  const [editingDue, setEditingDue] = useState("");
+  const plan = data.monthlyPlans.find(item => item.month_start === month);
+  const items = data.planItems.filter(item => item.plan_id === plan?.id);
+  const plannedIncome = items.filter(item => item.kind === "income").reduce((sum, item) => sum + Number(item.planned_paise), 0);
+  const plannedExpense = items.filter(item => item.kind === "fixed_expense" || item.kind === "variable_expense").reduce((sum, item) => sum + Number(item.planned_paise), 0);
+  const plannedSaving = items.filter(item => item.kind === "saving" || item.kind === "investment").reduce((sum, item) => sum + Number(item.planned_paise), 0);
+  const previousPlan = data.monthlyPlans.find(item => item.month_start === nextMonth(month, -1));
+  const matchingTemplates = data.recurringTemplates.filter(template => template.active && (kind === "income" ? template.kind === "income" : kind === "fixed_expense" || kind === "variable_expense" ? template.kind === "expense" : kind === "investment" ? template.kind === "investment_contribution" : false));
+
+  async function createPlan(copyPrevious: boolean) {
+    setLocalError("");
+    try { await run(async () => {
+      const { error } = await client.rpc("create_monthly_plan", { p_month_start: month, p_copy_previous: copyPrevious });
+      if (error) throw error;
+    }); }
+    catch (error) { setLocalError(errorText(error)); }
+  }
+
+  async function addItem(event: FormEvent) {
+    event.preventDefault(); setLocalError("");
+    if (!plan) return;
+    try {
+      if (["income", "fixed_expense", "variable_expense"].includes(kind) && !category) throw new Error("Choose a category so actual amounts can be matched accurately.");
+      if (category && items.some(item => item.category_id === category && (item.kind === "income") === (kind === "income") && (!recurringTemplate || !item.recurring_template_id))) throw new Error("This category already has an unlinked plan line this month. Edit that line or use separate linked recurring items.");
+      if (recurringTemplate && items.some(item => item.recurring_template_id === recurringTemplate)) throw new Error("This recurring item is already linked to a plan line this month.");
+      if (kind === "saving" && items.some(item => item.kind === "saving" && item.goal_id === goal)) throw new Error("This goal already has a saving plan line this month.");
+      if (kind === "investment" && items.some(item => item.kind === "investment" && item.account_id === account)) throw new Error("This holding already has an investment plan line this month.");
+      await run(() => insertRow(client, "plan_items", ownerId, {
+        id: crypto.randomUUID(), plan_id: plan.id, name: name.trim(), kind,
+        planned_paise: paiseFromRupees(amount), due_day: dueDay ? Number(dueDay) : null,
+        category_id: category || null, goal_id: goal || null, account_id: account || null,
+        recurring_template_id: recurringTemplate || null,
+      }));
+      setName(""); setAmount(""); setDueDay(""); setRecurringTemplate("");
+    } catch (error) { setLocalError(errorText(error)); }
+  }
+
+  async function saveItemEdit(item: PlanItem) {
+    setLocalError("");
+    try { await run(() => updateRow(client, "plan_items", item.id, { planned_paise: paiseFromRupees(editingAmount), due_day: editingDue ? Number(editingDue) : null }, item.version)); setEditingItem(null); }
+    catch (error) { setLocalError(errorText(error)); }
+  }
+
+  const displayMonth = monthLabel(month);
+  return <div className="page-stack">
+    <div className="section-actions"><label className="field">Planning month<input className="input" type="month" value={month.slice(0, 7)} onChange={event => { const selected = monthStartFromInput(event.target.value); if (selected) setMonth(selected); }} /></label><span className="pill">{displayMonth}</span></div>
+    {!plan ? <Section title={`Create your ${displayMonth} plan`} description="Choose how you want to start. Previous actual transactions will never be copied.">
+      <div className="choice-grid"><button className="choice-card" disabled={!previousPlan} onClick={() => void createPlan(true)}><strong>Copy previous month and edit</strong><span>{previousPlan ? "Bring forward planned lines and amounts. Review before using them." : "No previous month's plan exists yet."}</span></button><button className="choice-card" onClick={() => void createPlan(false)}><strong>Create from scratch</strong><span>Start with a blank monthly plan.</span></button></div>
+      {localError && <p className="form-error" role="alert">{localError}</p>}
+    </Section> : <>
+      <div className="section-actions"><span className="pill">{plan.status === "draft" ? "Draft · review before using" : "Active plan"}</span>{plan.status === "draft" && <button className="button button-primary" onClick={() => void run(() => updateRow(client, "monthly_plans", plan.id, { status: "active" }, plan.version)).catch(error => setLocalError(errorText(error)))}>Save and activate plan</button>}</div>
+      <div className="stat-grid"><StatCard label="Expected income" valuePaise={plannedIncome} /><StatCard label="Planned spending" valuePaise={plannedExpense} /><StatCard label="Savings & investing" valuePaise={plannedSaving} /><StatCard label="Unassigned" valuePaise={plannedIncome - plannedExpense - plannedSaving} tone={plannedIncome < plannedExpense + plannedSaving ? "warm" : "accent"} /></div>
+      {plannedIncome < plannedExpense + plannedSaving && <div className="notice-banner" role="status">This plan uses more than the expected income. Check the amounts before relying on it.</div>}
+      <Section title="Plan versus actual" description="Actuals come from recorded transactions and goal allocations; plans are never counted as transactions.">
+        {items.length ? <div className="table-wrap"><table className="data-table"><thead><tr><th>Item</th><th>Type</th><th>Planned</th><th>Actual</th><th>Remaining</th><th></th></tr></thead><tbody>{items.map(item => {
+          const actual = actualForPlanItem(item, data, month);
+          return <tr key={item.id}><td><strong>{item.name}</strong>{item.due_day && <span className="muted"> · due {item.due_day}</span>}</td><td>{planLabels[item.kind]}</td><td>{editingItem === item.id ? <input className="input" aria-label={`Planned amount for ${item.name}`} type="number" min="0" step="0.01" value={editingAmount} onChange={event => setEditingAmount(event.target.value)} /> : formatMoney(Number(item.planned_paise))}</td><td>{formatMoney(actual)}</td><td>{editingItem === item.id ? <input className="input" aria-label={`Due day for ${item.name}`} type="number" min="1" max="31" placeholder="Due day" value={editingDue} onChange={event => setEditingDue(event.target.value)} /> : formatMoney(Number(item.planned_paise) - actual)}</td><td>{editingItem === item.id ? <><button className="button button-secondary" onClick={() => void saveItemEdit(item)}>Save</button><button className="button button-quiet" onClick={() => setEditingItem(null)}>Cancel</button></> : <><button className="button button-quiet" onClick={() => { setEditingItem(item.id); setEditingAmount(rupeesFromPaise(Number(item.planned_paise))); setEditingDue(item.due_day ? String(item.due_day) : ""); }}>Edit</button><button className="button button-quiet" onClick={() => { if (window.confirm(`Remove planned item “${item.name}”? Actual transactions stay.`)) void run(() => deleteRow(client, "plan_items", item.id)).catch(() => {}); }}>Remove</button></>}</td></tr>;
+        })}</tbody></table></div> : <Empty text="This plan is empty. Add expected income, expenses, and savings below." />}
+      </Section>
+      <Section title="Add a planned item"><form className="form-stack" onSubmit={addItem}><div className="form-grid">
+        <label className="field">Name<input className="input" required placeholder="e.g. Rent" value={name} onChange={event => setName(event.target.value)} /></label>
+        <label className="field">Type<select className="select" value={kind} onChange={event => { setKind(event.target.value as PlanItem["kind"]); setCategory(""); setGoal(""); setAccount(""); setRecurringTemplate(""); }}>{planKinds.map(value => <option key={value} value={value}>{planLabels[value]}</option>)}</select></label>
+        {amountInput(amount, setAmount, "Planned amount (₹)")}
+        <label className="field">Due day (optional)<input className="input" type="number" min="1" max="31" value={dueDay} onChange={event => setDueDay(event.target.value)} /></label>
+        {matchingTemplates.length > 0 && <label className="field">Linked recurring item (optional)<select className="select" value={recurringTemplate} onChange={event => { const id = event.target.value; setRecurringTemplate(id); const template = matchingTemplates.find(item => item.id === id); if (template) { setName(template.name); setAmount(rupeesFromPaise(Number(template.amount_paise))); setDueDay(String(template.due_day)); setCategory(template.category_id || ""); setAccount(template.destination_account_id || ""); } }}><option value="">No linked recurring item</option>{matchingTemplates.map(template => <option key={template.id} value={template.id}>{template.name} · day {template.due_day}</option>)}</select></label>}
+        {(kind === "income" || kind === "fixed_expense" || kind === "variable_expense") && <label className="field">Category<select className="select" required value={category} onChange={event => setCategory(event.target.value)}><option value="">Choose category</option>{data.categories.filter(item => item.kind === (kind === "income" ? "income" : "expense")).map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>}
+        {kind === "saving" && <label className="field">Goal<select className="select" required value={goal} onChange={event => setGoal(event.target.value)}><option value="">Choose goal</option>{data.goals.filter(item => item.status === "active").map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>}
+        {kind === "investment" && accountSelect(data.accounts.filter(item => item.kind === "investment"), account, setAccount, "Investment holding")}
+      </div>{localError && <p className="form-error" role="alert">{localError}</p>}<button className="button button-primary">Add to plan</button></form></Section>
+    </>}
+  </div>;
+}
+
+export function RecurringView() {
+  const { data, ownerId, client, run, refresh } = useFinance();
+  const [month, setMonth] = useState(monthStart(todayInIndia()));
+  const [name, setName] = useState("");
+  const [kind, setKind] = useState<TransactionKind>("expense");
+  const [amount, setAmount] = useState("");
+  const [dueDay, setDueDay] = useState("1");
+  const [source, setSource] = useState("");
+  const [destination, setDestination] = useState("");
+  const [category, setCategory] = useState("");
+  const [localError, setLocalError] = useState("");
+  const [busyOccurrence, setBusyOccurrence] = useState<string | null>(null);
+
+  useEffect(() => {
+    client.rpc("ensure_recurring_occurrences", { p_month_start: month }).then(({ error }) => {
+      if (!error) void refresh();
+    });
+  }, [client, month, refresh]);
+
+  async function addTemplate(event: FormEvent) {
+    event.preventDefault(); setLocalError("");
+    try {
+      if ((kind === "income" || kind === "expense") && !category) throw new Error("Choose a category before saving this recurring item.");
+      if (source && source === destination) throw new Error("Source and destination accounts must differ.");
+      await run(() => insertRow(client, "recurring_templates", ownerId, {
+        id: crypto.randomUUID(), name: name.trim(), kind, amount_paise: paiseFromRupees(amount),
+        interest_paise: 0, due_day: Number(dueDay), starts_on: todayInIndia(),
+        source_account_id: source || null, destination_account_id: destination || null,
+        category_id: category || null, active: true,
+      }));
+      await client.rpc("ensure_recurring_occurrences", { p_month_start: month });
+      await refresh(); setName(""); setAmount("");
+    } catch (error) { setLocalError(errorText(error)); }
+  }
+
+  async function markPaid(occurrenceId: string, expected: number) {
+    const entered = window.prompt("Amount actually paid/received (₹)", rupeesFromPaise(expected));
+    if (entered === null) return;
+    setBusyOccurrence(occurrenceId); setLocalError("");
+    try {
+      const value = paiseFromRupees(entered);
+      await run(async () => {
+        const { error } = await client.rpc("record_recurring_payment", {
+          p_occurrence_id: occurrenceId, p_transaction_id: crypto.randomUUID(),
+          p_occurred_on: todayInIndia(), p_amount_paise: value, p_note: null,
+        });
+        if (error) throw error;
+      });
+    } catch (error) { setLocalError(errorText(error)); }
+    finally { setBusyOccurrence(null); }
+  }
+
+  const occurrences = data.recurringOccurrences.filter(item => item.month_start === month).sort((a, b) => a.due_on.localeCompare(b.due_on));
+  const overdueElsewhere = data.recurringOccurrences.filter(item => item.month_start !== month && item.status === "pending" && item.due_on < todayInIndia()).sort((a, b) => a.due_on.localeCompare(b.due_on));
+  function occurrenceRow(occurrence: RecurringOccurrence) {
+    const template = data.recurringTemplates.find(item => item.id === occurrence.template_id);
+    return <div className="list-row" key={occurrence.id}><div><strong>{template?.name || "Recurring item"}</strong><div className="muted">Due {occurrence.due_on} · {template?.kind || "expense"}</div></div><div className="list-actions"><strong>{formatMoney(Number(occurrence.expected_amount_paise))}</strong><span className="pill">{occurrence.status}</span>{occurrence.status === "pending" && <><button className="button button-secondary" disabled={busyOccurrence === occurrence.id} onClick={() => void markPaid(occurrence.id, Number(occurrence.expected_amount_paise))}>Mark paid</button><button className="button button-quiet" onClick={() => void run(async () => { const { error } = await client.rpc("set_recurring_occurrence_status", { p_occurrence_id: occurrence.id, p_status: "skipped" }); if (error) throw error; }).catch(() => {})}>Skip</button></>}{occurrence.status === "skipped" && <button className="button button-quiet" onClick={() => void run(async () => { const { error } = await client.rpc("set_recurring_occurrence_status", { p_occurrence_id: occurrence.id, p_status: "pending" }); if (error) throw error; }).catch(() => {})}>Restore</button>}</div></div>;
+  }
+  return <div className="page-stack">
+    <div className="section-actions"><MonthPicker month={month} onChange={setMonth} /></div>
+    {overdueElsewhere.length > 0 && <Section title="Overdue from other months" description="Record these on the actual payment date or skip them; they stay visible until resolved."><div className="list-stack">{overdueElsewhere.map(occurrenceRow)}</div></Section>}
+    <Section title={`Expected in ${monthLabel(month)}`} description="Recurring items are reminders until you mark an occurrence paid or received.">
+      {occurrences.length ? <div className="list-stack">{occurrences.map(occurrenceRow)}</div> : <Empty text="No recurring items scheduled for this month." />}
+    </Section>
+    <Section title="Recurring templates" description="A template makes a planned occurrence each month; it does not move money automatically. Pausing hides reminders and stops new occurrences; existing items remain available to resolve.">
+      {data.recurringTemplates.length ? <div className="list-stack">{data.recurringTemplates.map(template => <div className="list-row" key={template.id}><span><strong>{template.name}</strong><span className="muted"> · day {template.due_day} · {template.kind}</span></span><span>{formatMoney(Number(template.amount_paise))} <span className="pill">{template.active ? "Active" : "Paused"}</span><button className="button button-quiet" onClick={() => void run(() => updateRow(client, "recurring_templates", template.id, { active: !template.active }, template.version)).catch(() => {})}>{template.active ? "Pause" : "Resume"}</button></span></div>)}</div> : <Empty text="Add rent, salary, SIPs, subscriptions, or other regular items." />}
+    </Section>
+    <Section title="Add recurring item"><form className="form-stack" onSubmit={addTemplate}><div className="form-grid">
+      <label className="field">Name<input className="input" required value={name} onChange={event => setName(event.target.value)} placeholder="e.g. Rent" /></label>
+      <label className="field">Type<select className="select" value={kind} onChange={event => { setKind(event.target.value as TransactionKind); setSource(""); setDestination(""); setCategory(""); }}>{(["income", "expense", "investment_contribution", "card_payment", "loan_payment"] as TransactionKind[]).map(value => <option key={value} value={value}>{kindLabels[value]}</option>)}</select></label>
+      {amountInput(amount, setAmount, "Expected amount (₹)")}
+      <label className="field">Due day<input className="input" type="number" min="1" max="31" required value={dueDay} onChange={event => setDueDay(event.target.value)} /></label>
+      {kind !== "income" && accountSelect(data.accounts.filter(account => kind === "expense" ? ["cash", "bank", "card", "investment"].includes(account.kind) : ["cash", "bank"].includes(account.kind)), source, setSource, "From account")}
+      {kind !== "expense" && accountSelect(data.accounts.filter(account => kind === "income" ? ["cash", "bank"].includes(account.kind) : kind === "investment_contribution" ? account.kind === "investment" : kind === "card_payment" ? account.kind === "card" : account.kind === "loan"), destination, setDestination, "To account")}
+      {(kind === "income" || kind === "expense") && <label className="field">Category<select className="select" required value={category} onChange={event => setCategory(event.target.value)}><option value="">Choose category</option>{data.categories.filter(item => item.kind === (kind === "income" ? "income" : "expense")).map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>}
+    </div>{localError && <p className="form-error" role="alert">{localError}</p>}<button className="button button-primary">Add recurring item</button></form></Section>
+  </div>;
+}
+
+interface PaymentDraft { key: string; accountId: string; amount: string; method: string; categoryId: string; }
+
+export function GoalsView() {
+  const { data, ownerId, client, run, syncStatus } = useFinance();
+  const [name, setName] = useState("");
+  const [target, setTarget] = useState("");
+  const [targetOn, setTargetOn] = useState("");
+  const [monthly, setMonthly] = useState("0");
+  const [quickAccount, setQuickAccount] = useState("");
+  const [quickAmount, setQuickAmount] = useState("");
+  const [allocationGoal, setAllocationGoal] = useState("");
+  const [allocationAccount, setAllocationAccount] = useState("");
+  const [allocationMode, setAllocationMode] = useState<"total" | "increase">("total");
+  const [allocationValue, setAllocationValue] = useState("");
+  const [completing, setCompleting] = useState<Goal | null>(null);
+  const [payments, setPayments] = useState<PaymentDraft[]>([]);
+  const [reductions, setReductions] = useState<Record<string, string>>({});
+  const [unreservedUses, setUnreservedUses] = useState<Record<string, string>>({});
+  const [completionNote, setCompletionNote] = useState("");
+  const [localError, setLocalError] = useState("");
+  const balances = useMemo(() => balancesOn(data), [data]);
+  const activeGoals = data.goals.filter(goal => goal.status === "active");
+  const cashAccounts = data.accounts.filter(account => account.active && (account.kind === "bank" || account.kind === "cash"));
+  const selectedAllocationAccount = data.accounts.find(account => account.id === allocationAccount);
+  const selectedAllocation = data.goalAllocations.find(item => item.goal_id === allocationGoal && item.account_id === allocationAccount);
+  const currentReservation = Number(selectedAllocation?.cash_amount_paise || 0);
+
+  function existingAllocationValue(goalId: string, accountId: string): string {
+    const existing = data.goalAllocations.find(item => item.goal_id === goalId && item.account_id === accountId);
+    return existing ? (existing.investment_share_ppm !== null ? String(Number(existing.investment_share_ppm) / 10_000) : rupeesFromPaise(Number(existing.cash_amount_paise || 0))) : "";
+  }
+
+  async function addGoal(event: FormEvent) {
+    event.preventDefault(); setLocalError("");
+    try {
+      await run(() => insertRow(client, "goals", ownerId, {
+        id: crypto.randomUUID(), name: name.trim(), target_paise: paiseFromRupees(target),
+        target_on: targetOn || null, monthly_contribution_paise: paiseFromRupees(monthly),
+        status: "active", notes: null,
+      }));
+      setName(""); setTarget(""); setTargetOn(""); setMonthly("0");
+    } catch (error) { setLocalError(errorText(error)); }
+  }
+
+  async function doQuickSave(event: FormEvent) {
+    event.preventDefault(); setLocalError("");
+    try { await run(() => quickSave(client, quickAccount, paiseFromRupees(quickAmount))); setQuickAmount(""); }
+    catch (error) { setLocalError(errorText(error)); }
+  }
+
+  async function saveAllocation(event: FormEvent) {
+    event.preventDefault(); setLocalError("");
+    if (!selectedAllocationAccount) return;
+    try {
+      const change: Record<string, unknown> = { goal_id: allocationGoal, account_id: allocationAccount };
+      if (selectedAllocationAccount.kind === "investment") {
+        const ppm = Math.round(Number(allocationValue) * 10_000);
+        if (!Number.isInteger(ppm) || ppm < 0 || ppm > 1_000_000) throw new Error("Enter a share from 0% to 100%.");
+        change.investment_share_ppm = ppm;
+      } else if (allocationMode === "increase") {
+        const increase = paiseFromRupees(allocationValue);
+        change.cash_amount_paise = increasedCashReservation(currentReservation, increase, availableCash(selectedAllocationAccount, data, balances));
+      } else change.cash_amount_paise = paiseFromRupees(allocationValue);
+      await run(() => setGoalAllocations(client, [change]));
+      setAllocationValue("");
+    } catch (error) { setLocalError(errorText(error)); }
+  }
+
+  function openCompletion(goal: Goal) {
+    setCompleting(goal);
+    setPayments([{ key: crypto.randomUUID(), accountId: "", amount: "", method: "", categoryId: "" }]);
+    setReductions({}); setUnreservedUses({}); setCompletionNote(""); setLocalError("");
+  }
+
+  function changePayment(key: string, patch: Partial<PaymentDraft>) {
+    setPayments(current => current.map(payment => payment.key === key ? { ...payment, ...patch } : payment));
+  }
+
+  const completionAllocations = completing ? data.goalAllocations.filter(allocation => allocation.goal_id === completing.id) : [];
+  const otherAllocations = completing ? data.goalAllocations.filter(allocation => allocation.goal_id !== completing.id && payments.some(payment => payment.accountId === allocation.account_id)) : [];
+  const paymentByAccount = new Map<string, number>();
+  for (const payment of payments) {
+    const numeric = Number(payment.amount || 0);
+    if (payment.accountId && Number.isFinite(numeric)) paymentByAccount.set(payment.accountId, (paymentByAccount.get(payment.accountId) || 0) + Math.max(0, Math.round(numeric * 100)));
+  }
+  const fundingByAccount = new Map<string, { completed: number; unreserved: number; extra: number; minimumOther: number }>();
+  for (const [accountId, spending] of paymentByAccount) {
+    const account = data.accounts.find(item => item.id === accountId);
+    if (!account || account.kind === "card") continue;
+    const balance = balances.get(accountId) || 0;
+    const completed = completionAllocations.filter(item => item.account_id === accountId).reduce((sum, item) => sum + goalAllocationValue(item, account, balance), 0);
+    const otherReserved = otherAllocations.filter(item => item.account_id === accountId).reduce((sum, item) => sum + goalAllocationValue(item, account, balance), 0);
+    const unreserved = Math.max(0, balance - completed - otherReserved);
+    const extra = Math.max(0, spending - completed);
+    fundingByAccount.set(accountId, { completed, unreserved, extra, minimumOther: Math.max(0, extra - unreserved) });
+  }
+
+  async function finishGoal(event: FormEvent) {
+    event.preventDefault(); setLocalError("");
+    if (!completing) return;
+    try {
+      if (!navigator.onLine || syncStatus === "offline") throw new Error("Connect to the internet before completing a goal.");
+      const finalPayments: GoalPayment[] = payments.map(payment => ({
+        id: crypto.randomUUID(), account_id: payment.accountId, amount_paise: paiseFromRupees(payment.amount),
+        payment_method: payment.method.trim(), category_id: payment.categoryId || null,
+      }));
+      if (finalPayments.some(payment => !payment.account_id || !payment.payment_method || !payment.category_id || payment.amount_paise <= 0)) throw new Error("Choose a source account, positive amount, spending category, and payment method for every payment.");
+      const changes: Record<string, unknown>[] = completionAllocations.map(allocation => ({
+        goal_id: allocation.goal_id, account_id: allocation.account_id,
+        ...(allocation.cash_amount_paise !== null ? { cash_amount_paise: 0 } : { investment_share_ppm: 0 }),
+      }));
+      for (const allocation of otherAllocations) {
+        const entered = reductions[allocation.id];
+        const account = data.accounts.find(item => item.id === allocation.account_id)!;
+        if (account.kind === "investment") {
+          const balance = balances.get(account.id) || 0;
+          const spending = paymentByAccount.get(account.id) || 0;
+          const afterBalance = balance - spending;
+          const oldValue = goalAllocationValue(allocation, account, balance);
+          const reduction = entered ? paiseFromRupees(entered) : 0;
+          if (reduction > oldValue) throw new Error("Reduction exceeds the other goal's investment value.");
+          if (afterBalance < 0) throw new Error("Investment spending exceeds its latest recorded value.");
+          const targetValue = oldValue - reduction;
+          const newShare = afterBalance > 0 ? Math.floor(targetValue * 1_000_000 / afterBalance) : 0;
+          if (newShare > 1_000_000) throw new Error("Release more from other goals before this investment payment.");
+          changes.push({ goal_id: allocation.goal_id, account_id: allocation.account_id, investment_share_ppm: newShare });
+        } else {
+          if (!entered || Number(entered) <= 0) continue;
+          const current = Number(allocation.cash_amount_paise || 0);
+          const reduction = paiseFromRupees(entered);
+          if (reduction > current) throw new Error("Reduction exceeds the other goal's reservation.");
+          changes.push({ goal_id: allocation.goal_id, account_id: allocation.account_id, cash_amount_paise: current - reduction });
+        }
+      }
+      for (const [accountId, funding] of fundingByAccount) {
+        const account = data.accounts.find(item => item.id === accountId)!;
+        const choice = funding.extra > 0 ? unreservedUses[accountId] : "0";
+        if (funding.extra > 0 && (choice === undefined || choice === "")) throw new Error(`Choose explicitly how much unreserved money to use from ${account.name}. Enter 0 if you want to reduce other goals instead.`);
+        const unreservedUse = choice ? paiseFromRupees(choice) : 0;
+        if (unreservedUse > funding.unreserved) throw new Error(`${account.name} has only ${formatMoney(funding.unreserved)} unreserved.`);
+        const reductionValue = otherAllocations.filter(item => item.account_id === accountId).reduce((sum, allocation) => sum + (reductions[allocation.id] ? paiseFromRupees(reductions[allocation.id]) : 0), 0);
+        if (unreservedUse + reductionValue !== funding.extra) throw new Error(`For ${account.name}, choose exactly ${formatMoney(funding.extra)} beyond the completed goal: unreserved cash plus named other-goal reductions must add to that amount.`);
+      }
+      await run(() => completeGoal(client, completing.id, finalPayments, changes, completionNote.trim() || undefined));
+      setCompleting(null);
+    } catch (error) { setLocalError(errorText(error)); }
+  }
+
+  return <div className="page-stack">
+    <div className="goal-grid">{data.goals.length ? data.goals.map(goal => {
+      const funded = fundedForGoal(goal, data, balances);
+      const allocations = data.goalAllocations.filter(item => item.goal_id === goal.id).map(item => ({ source: data.accounts.find(account => account.id === item.account_id)?.name || "Account", amountPaise: goalAllocationValue(item, data.accounts.find(account => account.id === item.account_id), balances.get(item.account_id) || 0) }));
+      const completion = data.goalCompletions.find(item => item.goal_id === goal.id);
+      if (completion) for (const payment of data.goalCompletionPayments.filter(item => item.completion_id === completion.id)) { const transaction = data.transactions.find(item => item.id === payment.transaction_id); if (transaction) allocations.push({ source: `${data.accounts.find(account => account.id === transaction.source_account_id)?.name || "Account"} · ${payment.payment_method}`, amountPaise: Number(transaction.amount_paise) }); }
+      return <div key={goal.id} className="goal-action-wrap"><GoalCard name={goal.name} targetPaise={Number(goal.target_paise)} fundedPaise={funded} monthlySavingPaise={Number(goal.monthly_contribution_paise)} estimatedCompletion={goal.status === "completed" ? undefined : projectedGoalDate(goal, funded) || undefined} allocations={allocations} status={goal.status === "completed" ? "completed" : goal.status === "paused" ? "paused" : "active"} completedSpentPaise={completion ? Number(completion.total_spent_paise) : undefined} completedOn={goal.completed_at} /><div className="goal-card-actions">{(goal.status === "active" || goal.status === "paused") && <button className="button button-secondary" onClick={() => openCompletion(goal)}>Complete and record spending</button>}{goal.status === "active" && <button className="button button-quiet" onClick={() => void run(() => updateRow(client, "goals", goal.id, { status: "paused" }, goal.version)).catch(() => {})}>Pause</button>}{goal.status === "paused" && <button className="button button-quiet" onClick={() => void run(() => updateRow(client, "goals", goal.id, { status: "active" }, goal.version)).catch(() => {})}>Resume</button>}</div></div>;
+    }) : <Empty text="Add a goal to see what you are saving for and where its money is held." />}</div>
+    <div className="two-column-grid">
+      <Section title="Quick Save" description="Choose an account and amount. We reserve it equally across all active goals, even if a goal exceeds its target."><form className="form-stack" onSubmit={doQuickSave}>
+        {accountSelect(cashAccounts, quickAccount, setQuickAccount, "Save from")}
+        {quickAccount && <p className="muted">Available in this account: {formatMoney(availableCash(cashAccounts.find(item => item.id === quickAccount)!, data, balances))}</p>}
+        {amountInput(quickAmount, setQuickAmount)}
+        <p className="muted">{activeGoals.length} active goal{activeGoals.length === 1 ? "" : "s"} will receive an equal share.</p>
+        <button className="button button-primary" disabled={!activeGoals.length}>Split across goals</button>
+      </form></Section>
+      <Section title="Create a goal"><form className="form-stack" onSubmit={addGoal}>
+        <label className="field">Goal name<input className="input" required value={name} onChange={event => setName(event.target.value)} placeholder="e.g. Emergency Fund" /></label>
+        {amountInput(target, setTarget, "Target (₹)")}
+        {amountInput(monthly, setMonthly, "Planned monthly saving (₹)")}
+        <label className="field">Target date (optional)<input className="input" type="date" value={targetOn} onChange={event => setTargetOn(event.target.value)} /></label>
+        <button className="button button-secondary">Create goal</button>
+      </form></Section>
+    </div>
+    <Section title="Assign money to one goal" description="This changes a reservation, not an account balance. Investment shares change value with the holding."><form className="form-stack" onSubmit={saveAllocation}><div className="form-grid">
+      <label className="field">Goal<select className="select" required value={allocationGoal} onChange={event => { const value = event.target.value; setAllocationGoal(value); setAllocationValue(allocationMode === "total" ? existingAllocationValue(value, allocationAccount) : ""); }}><option value="">Choose goal</option>{data.goals.filter(item => item.status === "active" || item.status === "paused").map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
+      {accountSelect(data.accounts.filter(item => ["cash", "bank", "investment"].includes(item.kind)), allocationAccount, value => { setAllocationAccount(value); const investment = data.accounts.find(item => item.id === value)?.kind === "investment"; if (investment) setAllocationMode("total"); setAllocationValue(investment || allocationMode === "total" ? existingAllocationValue(allocationGoal, value) : ""); }, "Linked account or holding")}
+      {selectedAllocationAccount?.kind !== "investment" && <label className="field">Change reservation<select className="select" value={allocationMode} onChange={event => { const mode = event.target.value as "total" | "increase"; setAllocationMode(mode); setAllocationValue(mode === "total" ? existingAllocationValue(allocationGoal, allocationAccount) : ""); }}><option value="total">Set total reserved amount</option><option value="increase">Increase by an amount</option></select></label>}
+      {amountInput(allocationValue, setAllocationValue, selectedAllocationAccount?.kind === "investment" ? "Share of holding (%)" : allocationMode === "increase" ? "Add to this goal (₹)" : "Total reserved in this account (₹)")}
+    </div>{selectedAllocationAccount?.kind === "investment" ? <p className="muted">Investment reservations use a percentage of the holding, so they cannot be increased by an exact rupee amount here.</p> : allocationMode === "increase" ? <p className="muted">Currently reserved for this goal here: {formatMoney(currentReservation)}. Available to add: {selectedAllocationAccount ? formatMoney(availableCash(selectedAllocationAccount, data, balances)) : "choose an account"}. The amount entered will be added to the current reservation.</p> : <p className="muted">Enter the new total for this goal and source. Enter 0 to remove a reservation.</p>}<button className="button button-secondary">Update allocation</button></form></Section>
+    {localError && <p className="form-error" role="alert">{localError}</p>}
+    {completing && <div className="modal-backdrop" role="presentation"><section className="modal-panel surface-card" role="dialog" aria-modal="true" aria-labelledby="complete-title"><div className="section-heading"><div><p className="app-eyebrow">GOAL COMPLETION</p><h2 id="complete-title">Complete {completing.name}</h2><p>Choose exactly where the spending comes from. The app will not take money from other goals without your choice.</p></div><button className="button button-quiet" onClick={() => setCompleting(null)} aria-label="Close">✕</button></div>
+      <form className="form-stack" onSubmit={finishGoal}>
+        {payments.map((payment, index) => <div className="payment-row" key={payment.key}><h3>Payment {index + 1}</h3><div className="form-grid">
+          {accountSelect(data.accounts.filter(item => ["bank", "cash", "card", "investment"].includes(item.kind)), payment.accountId, value => changePayment(payment.key, { accountId: value }), "Paid from")}
+          {amountInput(payment.amount, value => changePayment(payment.key, { amount: value }))}
+          <label className="field">Spending method<input className="input" required placeholder="UPI, card, cash, bank transfer…" value={payment.method} onChange={event => changePayment(payment.key, { method: event.target.value })} /></label>
+          <label className="field">Spending category<select className="select" required value={payment.categoryId} onChange={event => changePayment(payment.key, { categoryId: event.target.value })}><option value="">Choose category</option>{data.categories.filter(item => item.kind === "expense").map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
+        </div>{payments.length > 1 && <button type="button" className="button button-quiet" onClick={() => setPayments(current => current.filter(item => item.key !== payment.key))}>Remove payment</button>}</div>)}
+        <button type="button" className="button button-quiet" onClick={() => setPayments(current => [...current, { key: crypto.randomUUID(), accountId: "", amount: "", method: "", categoryId: "" }])}>+ Add another source account</button>
+        <div className="completion-breakdown"><h3>Funding review</h3>{completionAllocations.length ? <p>Completing this goal releases its current reservations: {completionAllocations.map(item => `${data.accounts.find(account => account.id === item.account_id)?.name}: ${formatMoney(goalAllocationValue(item, data.accounts.find(account => account.id === item.account_id), balances.get(item.account_id) || 0))}`).join("; ")}.</p> : <p>This goal has no currently reserved money. Choose a source with available funds.</p>}
+          {[...paymentByAccount].map(([accountId, spending]) => { const account = data.accounts.find(item => item.id === accountId); if (account?.kind === "card") return <p key={accountId}>{account.name}: {formatMoney(spending)} will be recorded as a card purchase and increase card debt. Any goal reservations in other accounts will be released; no cash leaves those accounts until you record a card payment.</p>; const funding = fundingByAccount.get(accountId); return <div key={accountId} className="form-stack"><p>{account?.name}: spending {formatMoney(spending)}; this goal has {formatMoney(funding?.completed || 0)} reserved here; {formatMoney(funding?.unreserved || 0)} is currently unreserved. {account?.kind === "investment" ? "Other goals' shares will be adjusted to preserve their value unless you explicitly reduce them below." : "Other goal reservations remain unchanged unless you choose reductions below."}</p>{funding && funding.extra > 0 && <><p>Choose where the extra {formatMoney(funding.extra)} comes from on this completion. No source is selected automatically.{funding.minimumOther > 0 && ` At least ${formatMoney(funding.minimumOther)} must come from named other goals.`}</p><label className="field">Use unreserved amount from {account?.name} (₹, enter 0 if none)<input className="input" type="number" min="0" max={rupeesFromPaise(funding.unreserved)} step="0.01" required value={unreservedUses[accountId] ?? ""} onChange={event => setUnreservedUses(current => ({ ...current, [accountId]: event.target.value }))} /></label></>}</div>; })}
+          {otherAllocations.length > 0 && <div className="form-stack"><p>To use another goal, enter its exact reduction below. The selected reductions and unreserved amount must equal the extra spending for each account.</p>{otherAllocations.map(allocation => {
+            const account = data.accounts.find(item => item.id === allocation.account_id)!;
+            return <label className="field" key={allocation.id}>Reduce {data.goals.find(item => item.id === allocation.goal_id)?.name} in {account.name} by ₹ (currently {formatMoney(goalAllocationValue(allocation, account, balances.get(account.id) || 0))})<input className="input" type="number" min="0" step="0.01" value={reductions[allocation.id] || ""} onChange={event => setReductions(current => ({ ...current, [allocation.id]: event.target.value }))} /></label>;
+          })}</div>}
+        </div>
+        <label className="field">Note (optional)<input className="input" value={completionNote} onChange={event => setCompletionNote(event.target.value)} /></label>
+        {localError && <p className="form-error" role="alert">{localError}</p>}
+        <div className="section-actions"><button type="button" className="button button-quiet" onClick={() => setCompleting(null)}>Cancel</button><button className="button button-primary">Record spending and complete goal</button></div>
+      </form>
+    </section></div>}
+  </div>;
+}
+
+export function AlertsView() {
+  const { data, ownerId, client, run } = useFinance();
+  const alerts = buildAlerts(data, todayInIndia());
+  const stateFor = (key: string) => data.alertStates.find(state => state.alert_key === key);
+  const active = filterActiveAlerts(alerts, data.alertStates, new Date().toISOString());
+
+  async function changeAlert(key: string, state: "dismissed" | "snoozed", until: string | null) {
+    const existing = stateFor(key);
+    if (existing) await run(() => updateRow(client, "alert_states", existing.id, { state, snoozed_until: until }));
+    else await run(() => insertRow(client, "alert_states", ownerId, { id: crypto.randomUUID(), alert_key: key, state, snoozed_until: until }));
+  }
+
+  return <div className="page-stack">
+    <Section title="Active alerts" description="Dismissal is saved across your phone and PC. New monthly occurrences can alert again.">
+      {active.length ? <div className="list-stack">{active.map(alert => <AlertCard key={alert.key} title={alert.title} description={alert.description} severity={alert.severity} actionLabel={alert.href ? "Open" : undefined} onAction={alert.href ? () => { window.location.href = alert.href!; } : undefined} onDismiss={() => void changeAlert(alert.key, "dismissed", null)} onSnooze={() => void changeAlert(alert.key, "snoozed", new Date(Date.now() + 86_400_000).toISOString())} />)}</div> : <Empty text="No active alerts right now." />}
+    </Section>
+    <Section title="Dismissed and snoozed" description="Restore an alert if you want to see it again.">
+      {data.alertStates.length ? <div className="list-stack">{data.alertStates.map(state => <div className="list-row" key={state.id}><span><strong>{alerts.find(alert => alert.key === state.alert_key)?.title || state.alert_key}</strong><span className="muted"> · {state.state}{state.snoozed_until ? ` until ${new Date(state.snoozed_until).toLocaleString("en-IN")}` : ""}</span></span><button className="button button-quiet" onClick={() => void run(() => deleteRow(client, "alert_states", state.id)).catch(() => {})}>Restore</button></div>)}</div> : <Empty text="No dismissed alerts." />}
+    </Section>
+  </div>;
+}
+
+export function SettingsView() {
+  const { data, ownerId, client, run, pending, syncStatus } = useFinance();
+  const [categoryName, setCategoryName] = useState("");
+  const [categoryKind, setCategoryKind] = useState<"income" | "expense">("expense");
+  const [exportPass, setExportPass] = useState("");
+  const [importPass, setImportPass] = useState("");
+  const [importFile, setImportFile] = useState<File | null>(null);
+  const [preview, setPreview] = useState<BackupPayload | null>(null);
+  const [newPassword, setNewPassword] = useState("");
+  const [localError, setLocalError] = useState("");
+  const [localSuccess, setLocalSuccess] = useState("");
+
+  async function addCategory(event: FormEvent) {
+    event.preventDefault(); setLocalError("");
+    try { await run(() => insertRow(client, "categories", ownerId, { id: crypto.randomUUID(), name: categoryName.trim(), kind: categoryKind, active: true })); setCategoryName(""); }
+    catch (error) { setLocalError(errorText(error)); }
+  }
+
+  async function addDefaults() {
+    const defaults: { name: string; kind: "income" | "expense" }[] = [
+      { name: "Salary", kind: "income" }, { name: "Other income", kind: "income" },
+      { name: "Rent", kind: "expense" }, { name: "Food", kind: "expense" },
+      { name: "Travel", kind: "expense" }, { name: "Bills", kind: "expense" },
+      { name: "Shopping", kind: "expense" }, { name: "Health", kind: "expense" },
+      { name: "Goal spending", kind: "expense" }, { name: "Interest", kind: "expense" },
+    ];
+    setLocalError("");
+    try { await run(async () => {
+      for (const item of defaults) if (!data.categories.some(existing => existing.name.toLowerCase() === item.name.toLowerCase() && existing.kind === item.kind)) {
+        await insertRow(client, "categories", ownerId, { id: crypto.randomUUID(), ...item, active: true });
+      }
+    }); }
+    catch (error) { setLocalError(errorText(error)); }
+  }
+
+  async function exportEncrypted() {
+    setLocalError(""); setLocalSuccess("");
+    try {
+      if (!navigator.onLine || pending.length) throw new Error("Sync all pending transactions and connect to the internet before exporting a complete backup.");
+      const snapshot = await exportBackupSnapshot(client);
+      const text = await encryptBackup(snapshot, exportPass);
+      downloadText(`my-money-backup-${todayInIndia()}.json`, text);
+      const alertKey = `backup:${monthStart(todayInIndia())}`;
+      const existing = data.alertStates.find(state => state.alert_key === alertKey);
+      if (existing) await run(() => updateRow(client, "alert_states", existing.id, { state: "dismissed", snoozed_until: null }));
+      else await run(() => insertRow(client, "alert_states", ownerId, { id: crypto.randomUUID(), alert_key: alertKey, state: "dismissed", snoozed_until: null }));
+      setExportPass(""); setLocalSuccess("Encrypted backup downloaded. Keep the file and passphrase in separate safe places.");
+    } catch (error) { setLocalError(errorText(error)); }
+  }
+
+  async function previewImport() {
+    setLocalError(""); setLocalSuccess(""); setPreview(null);
+    if (!importFile) { setLocalError("Choose an encrypted backup file."); return; }
+    try { setPreview(await decryptBackup(await importFile.text(), importPass)); }
+    catch (error) { setLocalError(errorText(error)); }
+  }
+
+  async function restoreImport() {
+    if (!preview) return;
+    if (!window.confirm("Restore this backup into this empty project? The app will reject the import if any financial records already exist.")) return;
+    setLocalError("");
+    try {
+      await run(async () => {
+        const { error } = await client.rpc("restore_backup", { p_payload: { schema_version: 1, ...preview.tables } });
+        if (error) throw error;
+      });
+      setPreview(null); setImportPass(""); setImportFile(null); setLocalSuccess("Backup restored. Review balances, goals, and reports before entering new transactions.");
+    } catch (error) { setLocalError(errorText(error)); }
+  }
+
+  async function changePassword(event: FormEvent) {
+    event.preventDefault(); setLocalError(""); setLocalSuccess("");
+    try {
+      if (newPassword.length < 12) throw new Error("Use a password of at least 12 characters.");
+      const { error } = await client.auth.updateUser({ password: newPassword });
+      if (error) throw error;
+      setNewPassword(""); setLocalSuccess("Password updated.");
+    } catch (error) { setLocalError(errorText(error)); }
+  }
+
+  async function signOut() {
+    if (pending.length && !window.confirm(`${pending.length} transaction(s) have not synced. Signing out will remove those pending items from this device. Continue?`)) return;
+    const scope = `${process.env.NEXT_PUBLIC_SUPABASE_URL || ""}:${ownerId}`;
+    await clearOfflineScope(scope);
+    await client.auth.signOut();
+  }
+
+  const count = Object.values(BACKUP_TABLES).reduce((sum, table) => sum + (preview?.tables[table]?.length || 0), 0);
+  const previewData = preview ? Object.fromEntries(Object.entries(BACKUP_TABLES).map(([key, table]) => [key, preview.tables[table]])) as unknown as FinanceData : null;
+  const previewTotals = previewData ? totalsOn(previewData) : null;
+  return <div className="page-stack">
+    <div className="two-column-grid">
+      <Section title="Categories" description="Categories organize transactions and budget lines.">
+        <button className="button button-secondary" onClick={() => void addDefaults()}>Add suggested categories</button>
+        <form className="form-stack inline-form" onSubmit={addCategory}><div className="form-grid"><label className="field">Name<input className="input" required value={categoryName} onChange={event => setCategoryName(event.target.value)} /></label><label className="field">Type<select className="select" value={categoryKind} onChange={event => setCategoryKind(event.target.value as "income" | "expense")}><option value="expense">Expense</option><option value="income">Income</option></select></label></div><button className="button button-primary">Add category</button></form>
+        <div className="tag-list">{data.categories.map(item => <span key={item.id} className="pill">{item.name} · {item.kind}</span>)}</div>
+      </Section>
+      <Section title="Account security" description="Only the owner account can access this application's financial data."><p>Signed in as the private owner. Sync status: <strong>{syncStatus}</strong>.</p><p>{pending.length} unsynced transaction{pending.length === 1 ? "" : "s"} on this device.</p><form className="form-stack" onSubmit={changePassword}><label className="field">New password<input className="input" type="password" minLength={12} autoComplete="new-password" value={newPassword} onChange={event => setNewPassword(event.target.value)} /></label><button className="button button-secondary">Update password</button></form><button className="button button-quiet" onClick={() => void signOut()}>Sign out</button></Section>
+    </div>
+    <Section title="Encrypted backup" description="Supabase Free has no automatic database backup. Export regularly and keep a copy outside this device."><div className="form-stack"><label className="field">Backup passphrase (at least 12 characters)<input className="input" type="password" minLength={12} value={exportPass} onChange={event => setExportPass(event.target.value)} /></label><div className="section-actions"><button className="button button-primary" onClick={() => void exportEncrypted()}>Download encrypted JSON</button><button className="button button-secondary" onClick={() => downloadText(`my-money-transactions-${todayInIndia()}.csv`, transactionsCsv(data), "text/csv")}>Download transactions CSV</button></div><p className="muted">CSV is plain text. The encrypted JSON contains all app data, including goals and history. Keep your passphrase separately; it cannot be recovered from the file.</p></div></Section>
+    <Section title="Restore an encrypted backup" description="Restore works only in an empty project after owner setup. Preview counts and totals before importing; a failed import rolls back."><div className="form-stack"><label className="field">Backup file<input className="input" type="file" accept="application/json,.json" onChange={event => { setImportFile(event.target.files?.[0] || null); setPreview(null); }} /></label><label className="field">Backup passphrase<input className="input" type="password" value={importPass} onChange={event => setImportPass(event.target.value)} /></label><button className="button button-secondary" onClick={() => void previewImport()}>Unlock and preview</button>{preview && <div className="notice-banner"><div><strong>Backup from {new Date(preview.exported_at).toLocaleString("en-IN")}</strong><p>{count} records across {Object.keys(BACKUP_TABLES).length} tables; {preview.tables.accounts.length} accounts, {preview.tables.transactions.length} transactions, {preview.tables.goals.length} goals.</p>{previewTotals && <p>Cash {formatMoney(previewTotals.cash)} · Investments {formatMoney(previewTotals.investments)} · Debts {formatMoney(previewTotals.debts)} · Net worth {formatMoney(previewTotals.netWorth)}</p>}</div><button className="button button-primary" onClick={() => void restoreImport()}>Restore into empty project</button></div>}</div></Section>
+    {localError && <p className="form-error" role="alert">{localError}</p>}{localSuccess && <p className="notice-banner" role="status">{localSuccess}</p>}
+  </div>;
+}
