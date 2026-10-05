@@ -9,7 +9,7 @@ import { BACKUP_TABLES, decryptBackup, downloadText, encryptBackup, transactions
 import { clearOfflineScope } from "@/lib/offline";
 import { availableCash, balancesOn, fundedForGoal, goalAllocationValue, increasedCashReservation, monthLabel, monthStart, monthStartFromInput, nextMonth, paiseFromRupees, projectedGoalDate, rupeesFromPaise, todayInIndia, totalsOn } from "@/lib/finance";
 import { actualForPlanItem, buildAlerts, filterActiveAlerts } from "@/lib/planning";
-import type { Account, FinanceData, Goal, MoneyTransaction, PlanItem, RecurringOccurrence, TransactionKind } from "@/lib/types";
+import type { Account, FinanceData, Goal, MoneyTransaction, PlanItem, RecurringOccurrence, RecurringTemplate, TransactionKind } from "@/lib/types";
 
 function errorText(error: unknown): string { return error instanceof Error ? error.message : String(error); }
 function amountInput(value: string, setter: (value: string) => void, label = "Amount (₹)") {
@@ -333,7 +333,11 @@ export function RecurringView() {
   const [source, setSource] = useState("");
   const [destination, setDestination] = useState("");
   const [category, setCategory] = useState("");
+  const [editingTemplate, setEditingTemplate] = useState<RecurringTemplate | null>(null);
   const [localError, setLocalError] = useState("");
+  const [paymentOccurrenceId, setPaymentOccurrenceId] = useState<string | null>(null);
+  const [paymentAmount, setPaymentAmount] = useState("");
+  const [paymentError, setPaymentError] = useState("");
   const [busyOccurrence, setBusyOccurrence] = useState<string | null>(null);
 
   useEffect(() => {
@@ -342,44 +346,86 @@ export function RecurringView() {
     });
   }, [client, month, refresh]);
 
-  async function addTemplate(event: FormEvent) {
+  function startEditing(template: RecurringTemplate) {
+    setEditingTemplate(template); setLocalError("");
+    setName(template.name); setKind(template.kind as TransactionKind);
+    setAmount(rupeesFromPaise(Number(template.amount_paise)));
+    setDueDay(String(template.due_day));
+    setSource(template.source_account_id || "");
+    setDestination(template.destination_account_id || "");
+    setCategory(template.category_id || "");
+    document.getElementById("recurring-editor")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  function clearEditor() {
+    setEditingTemplate(null); setName(""); setKind("expense"); setAmount("");
+    setDueDay("1"); setSource(""); setDestination(""); setCategory(""); setLocalError("");
+  }
+
+  async function saveTemplate(event: FormEvent) {
     event.preventDefault(); setLocalError("");
     try {
       if ((kind === "income" || kind === "expense") && !category) throw new Error("Choose a category before saving this recurring item.");
       if (source && source === destination) throw new Error("Source and destination accounts must differ.");
-      await run(() => insertRow(client, "recurring_templates", ownerId, {
-        id: crypto.randomUUID(), name: name.trim(), kind, amount_paise: paiseFromRupees(amount),
-        interest_paise: 0, due_day: Number(dueDay), starts_on: todayInIndia(),
+      const amountPaise = paiseFromRupees(amount);
+      if (amountPaise <= 0) throw new Error("Enter an expected amount greater than zero.");
+      const values = {
+        name: name.trim(), kind, amount_paise: amountPaise, due_day: Number(dueDay),
         source_account_id: source || null, destination_account_id: destination || null,
-        category_id: category || null, active: true,
-      }));
-      await client.rpc("ensure_recurring_occurrences", { p_month_start: month });
-      await refresh(); setName(""); setAmount("");
+        category_id: category || null,
+      };
+      await run(async () => {
+        if (editingTemplate) await updateRow(client, "recurring_templates", editingTemplate.id, values, editingTemplate.version);
+        else {
+          await insertRow(client, "recurring_templates", ownerId, {
+            id: crypto.randomUUID(), ...values, interest_paise: 0,
+            starts_on: todayInIndia(), active: true,
+          });
+          const { error } = await client.rpc("ensure_recurring_occurrences", { p_month_start: month });
+          if (error) throw error;
+        }
+      });
+      clearEditor();
     } catch (error) { setLocalError(errorText(error)); }
   }
 
-  async function markPaid(occurrenceId: string, expected: number) {
-    const entered = window.prompt("Amount actually paid/received (₹)", rupeesFromPaise(expected));
-    if (entered === null) return;
-    setBusyOccurrence(occurrenceId); setLocalError("");
+  function reviewPayment(occurrence: RecurringOccurrence) {
+    setPaymentOccurrenceId(occurrence.id);
+    setPaymentAmount(rupeesFromPaise(Number(occurrence.expected_amount_paise)));
+    setPaymentError("");
+  }
+
+  async function markPaid(event: FormEvent) {
+    event.preventDefault(); setPaymentError("");
+    if (!paymentOccurrenceId || busyOccurrence) return;
+    setBusyOccurrence(paymentOccurrenceId);
     try {
-      const value = paiseFromRupees(entered);
+      const value = paiseFromRupees(paymentAmount);
+      if (value <= 0) throw new Error("Enter an actual amount greater than zero.");
       await run(async () => {
         const { error } = await client.rpc("record_recurring_payment", {
-          p_occurrence_id: occurrenceId, p_transaction_id: crypto.randomUUID(),
+          p_occurrence_id: paymentOccurrenceId, p_transaction_id: crypto.randomUUID(),
           p_occurred_on: todayInIndia(), p_amount_paise: value, p_note: null,
         });
         if (error) throw error;
       });
-    } catch (error) { setLocalError(errorText(error)); }
+      setPaymentOccurrenceId(null);
+    } catch (error) { setPaymentError(errorText(error)); }
     finally { setBusyOccurrence(null); }
   }
 
+  const paymentOccurrence = data.recurringOccurrences.find(item => item.id === paymentOccurrenceId);
+  const paymentTemplate = data.recurringTemplates.find(item => item.id === paymentOccurrence?.template_id);
+  const paymentDetails = [
+    paymentTemplate?.source_account_id && `From ${data.accounts.find(item => item.id === paymentTemplate.source_account_id)?.name || "account"}`,
+    paymentTemplate?.destination_account_id && `To ${data.accounts.find(item => item.id === paymentTemplate.destination_account_id)?.name || "account"}`,
+    paymentTemplate?.category_id && (data.categories.find(item => item.id === paymentTemplate.category_id)?.name || "category"),
+  ].filter(Boolean).join(" · ");
   const occurrences = data.recurringOccurrences.filter(item => item.month_start === month).sort((a, b) => a.due_on.localeCompare(b.due_on));
   const overdueElsewhere = data.recurringOccurrences.filter(item => item.month_start !== month && item.status === "pending" && item.due_on < todayInIndia()).sort((a, b) => a.due_on.localeCompare(b.due_on));
   function occurrenceRow(occurrence: RecurringOccurrence) {
     const template = data.recurringTemplates.find(item => item.id === occurrence.template_id);
-    return <div className="list-row" key={occurrence.id}><div><strong>{template?.name || "Recurring item"}</strong><div className="muted">Due {occurrence.due_on} · {template?.kind || "expense"}</div></div><div className="list-actions"><strong>{formatMoney(Number(occurrence.expected_amount_paise))}</strong><span className="pill">{occurrence.status}</span>{occurrence.status === "pending" && <><button className="button button-secondary" disabled={busyOccurrence === occurrence.id} onClick={() => void markPaid(occurrence.id, Number(occurrence.expected_amount_paise))}>Mark paid</button><button className="button button-quiet" onClick={() => void run(async () => { const { error } = await client.rpc("set_recurring_occurrence_status", { p_occurrence_id: occurrence.id, p_status: "skipped" }); if (error) throw error; }).catch(() => {})}>Skip</button></>}{occurrence.status === "skipped" && <button className="button button-quiet" onClick={() => void run(async () => { const { error } = await client.rpc("set_recurring_occurrence_status", { p_occurrence_id: occurrence.id, p_status: "pending" }); if (error) throw error; }).catch(() => {})}>Restore</button>}</div></div>;
+    return <div className="list-row" key={occurrence.id}><div><strong>{template?.name || "Recurring item"}</strong><div className="muted">Due {occurrence.due_on} · {template?.kind || "expense"}</div></div><div className="list-actions"><strong>{formatMoney(Number(occurrence.expected_amount_paise))}</strong><span className="pill">{occurrence.status}</span>{occurrence.status === "pending" && <><button className="button button-secondary" disabled={busyOccurrence === occurrence.id} onClick={() => reviewPayment(occurrence)}>Mark paid</button><button className="button button-quiet" onClick={() => void run(async () => { const { error } = await client.rpc("set_recurring_occurrence_status", { p_occurrence_id: occurrence.id, p_status: "skipped" }); if (error) throw error; }).catch(() => {})}>Skip</button></>}{occurrence.status === "skipped" && <button className="button button-quiet" onClick={() => void run(async () => { const { error } = await client.rpc("set_recurring_occurrence_status", { p_occurrence_id: occurrence.id, p_status: "pending" }); if (error) throw error; }).catch(() => {})}>Restore</button>}</div></div>;
   }
   return <div className="page-stack">
     <div className="section-actions"><MonthPicker month={month} onChange={setMonth} /></div>
@@ -387,18 +433,29 @@ export function RecurringView() {
     <Section title={`Expected in ${monthLabel(month)}`} description="Recurring items are reminders until you mark an occurrence paid or received.">
       {occurrences.length ? <div className="list-stack">{occurrences.map(occurrenceRow)}</div> : <Empty text="No recurring items scheduled for this month." />}
     </Section>
-    <Section title="Recurring templates" description="A template makes a planned occurrence each month; it does not move money automatically. Pausing hides reminders and stops new occurrences; existing items remain available to resolve.">
-      {data.recurringTemplates.length ? <div className="list-stack">{data.recurringTemplates.map(template => <div className="list-row" key={template.id}><span><strong>{template.name}</strong><span className="muted"> · day {template.due_day} · {template.kind}</span></span><span>{formatMoney(Number(template.amount_paise))} <span className="pill">{template.active ? "Active" : "Paused"}</span><button className="button button-quiet" onClick={() => void run(() => updateRow(client, "recurring_templates", template.id, { active: !template.active }, template.version)).catch(() => {})}>{template.active ? "Pause" : "Resume"}</button></span></div>)}</div> : <Empty text="Add rent, salary, SIPs, subscriptions, or other regular items." />}
+    <Section title="Recurring templates" description="A template creates monthly reminders but never moves money automatically. Amount or due-day edits update pending reminders for this and future months. Recorded transactions and older reminder amounts stay unchanged. Pausing stops new reminders.">
+      {data.recurringTemplates.length ? <div className="list-stack">{data.recurringTemplates.map(template => <div className="list-row" key={template.id}><span><strong>{template.name}</strong><span className="muted"> · day {template.due_day} · {template.kind}</span></span><span>{formatMoney(Number(template.amount_paise))} <span className="pill">{template.active ? "Active" : "Paused"}</span><button className="button button-quiet" onClick={() => startEditing(template)}>Edit</button><button className="button button-quiet" onClick={() => void run(() => updateRow(client, "recurring_templates", template.id, { active: !template.active }, template.version)).catch(error => setLocalError(errorText(error)))}>{template.active ? "Pause" : "Resume"}</button></span></div>)}</div> : <Empty text="Add rent, salary, SIPs, subscriptions, or other regular items." />}
     </Section>
-    <Section title="Add recurring item"><form className="form-stack" onSubmit={addTemplate}><div className="form-grid">
+    <div id="recurring-editor"><Section title={editingTemplate ? `Edit ${editingTemplate.name}` : "Add recurring item"}><form className="form-stack" onSubmit={saveTemplate}><div className="form-grid">
       <label className="field">Name<input className="input" required value={name} onChange={event => setName(event.target.value)} placeholder="e.g. Rent" /></label>
-      <label className="field">Type<select className="select" value={kind} onChange={event => { setKind(event.target.value as TransactionKind); setSource(""); setDestination(""); setCategory(""); }}>{(["income", "expense", "investment_contribution", "card_payment", "loan_payment"] as TransactionKind[]).map(value => <option key={value} value={value}>{kindLabels[value]}</option>)}</select></label>
+      <label className="field">Type<select className="select" value={kind} onChange={event => { setKind(event.target.value as TransactionKind); setSource(""); setDestination(""); setCategory(""); }}>{(["income", "expense", "transfer", "investment_contribution", "card_payment", "loan_payment"] as TransactionKind[]).map(value => <option key={value} value={value}>{kindLabels[value]}</option>)}</select></label>
       {amountInput(amount, setAmount, "Expected amount (₹)")}
       <label className="field">Due day<input className="input" type="number" min="1" max="31" required value={dueDay} onChange={event => setDueDay(event.target.value)} /></label>
       {kind !== "income" && accountSelect(data.accounts.filter(account => kind === "expense" ? ["cash", "bank", "card", "investment"].includes(account.kind) : ["cash", "bank"].includes(account.kind)), source, setSource, "From account")}
-      {kind !== "expense" && accountSelect(data.accounts.filter(account => kind === "income" ? ["cash", "bank"].includes(account.kind) : kind === "investment_contribution" ? account.kind === "investment" : kind === "card_payment" ? account.kind === "card" : account.kind === "loan"), destination, setDestination, "To account")}
+      {kind !== "expense" && accountSelect(data.accounts.filter(account => kind === "income" ? ["cash", "bank"].includes(account.kind) : kind === "transfer" ? ["cash", "bank", "investment"].includes(account.kind) : kind === "investment_contribution" ? account.kind === "investment" : kind === "card_payment" ? account.kind === "card" : account.kind === "loan"), destination, setDestination, "To account")}
       {(kind === "income" || kind === "expense") && <label className="field">Category<select className="select" required value={category} onChange={event => setCategory(event.target.value)}><option value="">Choose category</option>{data.categories.filter(item => item.kind === (kind === "income" ? "income" : "expense")).map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>}
-    </div>{localError && <p className="form-error" role="alert">{localError}</p>}<button className="button button-primary">Add recurring item</button></form></Section>
+    </div>{localError && <p className="form-error" role="alert">{localError}</p>}<div className="form-actions"><button className="button button-primary">{editingTemplate ? "Save recurring item" : "Add recurring item"}</button>{editingTemplate && <button type="button" className="button button-secondary" onClick={clearEditor}>Cancel editing</button>}</div></form></Section></div>
+    {paymentOccurrenceId && <div className="modal-backdrop" role="presentation"><section className="modal-panel surface-card" role="dialog" aria-modal="true" aria-labelledby="recurring-payment-title"><div className="section-heading"><div><p className="app-eyebrow">RECURRING PAYMENT</p><h2 id="recurring-payment-title">Review {paymentTemplate?.name || "payment"}</h2><p>Check the actual amount before recording it. Nothing is processed until you confirm.</p></div><button type="button" className="button button-quiet" aria-label="Close" disabled={!!busyOccurrence} onClick={() => setPaymentOccurrenceId(null)}>✕</button></div>
+      <form className="form-stack" onSubmit={markPaid}>
+        <p className="muted">Expected {paymentOccurrence ? formatMoney(Number(paymentOccurrence.expected_amount_paise)) : "—"} · due {paymentOccurrence?.due_on || "—"} · recording on {todayInIndia()}</p>
+        {paymentDetails && <p className="muted">{paymentDetails}</p>}
+        <label className="field">Actual amount to record (₹)<input className="input" type="number" min="0.01" step="0.01" required autoFocus value={paymentAmount} onChange={event => setPaymentAmount(event.target.value)} /></label>
+        <p className="muted">Changing this amount affects only this payment, not the recurring template.</p>
+        {paymentOccurrence?.status !== "pending" && <p className="form-error" role="alert">This reminder is no longer pending. Close this window and review its status.</p>}
+        {paymentError && <p className="form-error" role="alert">{paymentError}</p>}
+        <div className="section-actions"><button type="button" className="button button-secondary" disabled={!!busyOccurrence} onClick={() => setPaymentOccurrenceId(null)}>Cancel</button><button className="button button-primary" disabled={!!busyOccurrence || paymentOccurrence?.status !== "pending"}>{busyOccurrence ? "Recording…" : "Confirm and record payment"}</button></div>
+      </form>
+    </section></div>}
   </div>;
 }
 
