@@ -29,6 +29,7 @@ export interface Category {
   name: string;
   kind: "income" | "expense";
   active: boolean;
+  version?: number;
 }
 
 export interface MoneyTransaction {

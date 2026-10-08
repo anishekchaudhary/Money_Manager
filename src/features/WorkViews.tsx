@@ -419,7 +419,7 @@ export function MonthlyPlanView({ month: selectedMonth, onMonthChange }: Plannin
         {amountInput(amount, setAmount, "Planned amount (₹)")}
         <label className="field">Due day (optional)<input className="input" type="number" min="1" max="31" value={dueDay} onChange={event => setDueDay(event.target.value)} /></label>
         {matchingTemplates.length > 0 && <label className="field">Linked recurring item (optional)<select className="select" value={recurringTemplate} onChange={event => { const id = event.target.value; setRecurringTemplate(id); const template = matchingTemplates.find(item => item.id === id); if (template) { setName(template.name); setAmount(rupeesFromPaise(Number(template.amount_paise))); setDueDay(String(template.due_day)); setCategory(template.category_id || ""); setAccount(template.destination_account_id || ""); setFundingAccount(cashFundingAccounts.some(funding => funding.id === template.source_account_id) ? template.source_account_id || "" : ""); } }}><option value="">No linked recurring item</option>{matchingTemplates.map(template => <option key={template.id} value={template.id}>{template.name} · day {template.due_day}</option>)}</select></label>}
-        {(kind === "income" || kind === "fixed_expense" || kind === "variable_expense") && <label className="field">Category<select className="select" required value={category} onChange={event => setCategory(event.target.value)}><option value="">Choose category</option>{data.categories.filter(item => item.kind === (kind === "income" ? "income" : "expense")).map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>}
+        {(kind === "income" || kind === "fixed_expense" || kind === "variable_expense") && <label className="field">Category<select className="select" required value={category} onChange={event => setCategory(event.target.value)}><option value="">Choose category</option>{data.categories.filter(item => item.active && item.kind === (kind === "income" ? "income" : "expense")).map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>}
         {kind === "saving" && <label className="field">Goal<select className="select" required value={goal} onChange={event => setGoal(event.target.value)}><option value="">Choose goal</option>{data.goals.filter(item => item.status === "active").map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>}
         {kind === "investment" && accountSelect(data.accounts.filter(item => item.kind === "investment"), account, setAccount, "Investment holding")}
         {kind !== "income" && <label className="field">Funding bank or cash account<select className="select" value={fundingAccount} onChange={event => setFundingAccount(event.target.value)}><option value="">Choose funding account</option>{cashFundingAccounts.map(funding => <option key={funding.id} value={funding.id}>{funding.name}</option>)}</select></label>}
@@ -552,7 +552,7 @@ export function RecurringView({ month: selectedMonth, onMonthChange }: PlanningS
       <label className="field">Due day<input className="input" type="number" min="1" max="31" required value={dueDay} onChange={event => setDueDay(event.target.value)} /></label>
       {kind !== "income" && accountSelect(data.accounts.filter(account => kind === "expense" ? ["cash", "bank", "card", "investment"].includes(account.kind) : ["cash", "bank"].includes(account.kind)), source, setSource, "From account")}
       {kind !== "expense" && accountSelect(data.accounts.filter(account => kind === "income" ? ["cash", "bank"].includes(account.kind) : kind === "transfer" ? ["cash", "bank", "investment"].includes(account.kind) : kind === "investment_contribution" ? account.kind === "investment" : kind === "card_payment" ? account.kind === "card" : account.kind === "loan"), destination, setDestination, "To account")}
-      {(kind === "income" || kind === "expense") && <label className="field">Category<select className="select" required value={category} onChange={event => setCategory(event.target.value)}><option value="">Choose category</option>{data.categories.filter(item => item.kind === (kind === "income" ? "income" : "expense")).map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>}
+      {(kind === "income" || kind === "expense") && <label className="field">Category<select className="select" required value={category} onChange={event => setCategory(event.target.value)}><option value="">Choose category</option>{data.categories.filter(item => item.active && item.kind === (kind === "income" ? "income" : "expense")).map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>}
     </div>{localError && <p className="form-error" role="alert">{localError}</p>}<div className="form-actions"><button className="button button-primary">{editingTemplate ? "Save recurring item" : "Add recurring item"}</button>{editingTemplate && <button type="button" className="button button-secondary" onClick={clearEditor}>Cancel editing</button>}</div></form></Section></div>
     {paymentOccurrenceId && <div className="modal-backdrop" role="presentation"><section className="modal-panel surface-card" role="dialog" aria-modal="true" aria-labelledby="recurring-payment-title"><div className="section-heading"><div><p className="app-eyebrow">RECURRING PAYMENT</p><h2 id="recurring-payment-title">Review {paymentTemplate?.name || "payment"}</h2><p>Check the actual amount before recording it. Nothing is processed until you confirm.</p></div><button type="button" className="button button-quiet" aria-label="Close" disabled={!!busyOccurrence} onClick={() => setPaymentOccurrenceId(null)}>✕</button></div>
       <form className="form-stack" onSubmit={markPaid}>
@@ -772,7 +772,7 @@ export function GoalsView() {
           {accountSelect(data.accounts.filter(item => ["bank", "cash", "card", "investment"].includes(item.kind)), payment.accountId, value => changePayment(payment.key, { accountId: value }), "Paid from")}
           {amountInput(payment.amount, value => changePayment(payment.key, { amount: value }))}
           <label className="field">Spending method<input className="input" required placeholder="UPI, card, cash, bank transfer…" value={payment.method} onChange={event => changePayment(payment.key, { method: event.target.value })} /></label>
-          <label className="field">Spending category<select className="select" required value={payment.categoryId} onChange={event => changePayment(payment.key, { categoryId: event.target.value })}><option value="">Choose category</option>{data.categories.filter(item => item.kind === "expense").map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
+          <label className="field">Spending category<select className="select" required value={payment.categoryId} onChange={event => changePayment(payment.key, { categoryId: event.target.value })}><option value="">Choose category</option>{data.categories.filter(item => item.active && item.kind === "expense").map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
         </div>{payments.length > 1 && <button type="button" className="button button-quiet" onClick={() => setPayments(current => current.filter(item => item.key !== payment.key))}>Remove payment</button>}</div>)}
         <button type="button" className="button button-quiet" onClick={() => setPayments(current => [...current, { key: crypto.randomUUID(), accountId: "", amount: "", method: "", categoryId: "" }])}>+ Add another source account</button>
         <div className="completion-breakdown"><h3>Funding review</h3>{completionAllocations.length ? <p>Completing this goal releases its current reservations: {completionAllocations.map(item => `${data.accounts.find(account => account.id === item.account_id)?.name}: ${formatMoney(goalAllocationValue(item, data.accounts.find(account => account.id === item.account_id), balances.get(item.account_id) || 0))}`).join("; ")}.</p> : <p>This goal has no currently reserved money. Choose a source with available funds.</p>}
@@ -816,6 +816,9 @@ export function SettingsView() {
   const { data, ownerId, client, run, pending, syncStatus } = useFinance();
   const [categoryName, setCategoryName] = useState("");
   const [categoryKind, setCategoryKind] = useState<"income" | "expense">("expense");
+  const [editingCategoryId, setEditingCategoryId] = useState<string | null>(null);
+  const [editingCategoryName, setEditingCategoryName] = useState("");
+  const [editingCategoryKind, setEditingCategoryKind] = useState<"income" | "expense">("expense");
   const [exportPass, setExportPass] = useState("");
   const [importPass, setImportPass] = useState("");
   const [importFile, setImportFile] = useState<File | null>(null);
@@ -828,6 +831,63 @@ export function SettingsView() {
     event.preventDefault(); setLocalError("");
     try { await run(() => insertRow(client, "categories", ownerId, { id: crypto.randomUUID(), name: categoryName.trim(), kind: categoryKind, active: true })); setCategoryName(""); }
     catch (error) { setLocalError(errorText(error)); }
+  }
+
+  function categoryIsReferenced(categoryId: string): boolean {
+    return data.transactions.some(item => item.category_id === categoryId)
+      || data.planItems.some(item => item.category_id === categoryId)
+      || data.recurringTemplates.some(item => item.category_id === categoryId);
+  }
+
+  function startCategoryEdit(category: FinanceData["categories"][number]) {
+    setEditingCategoryId(category.id);
+    setEditingCategoryName(category.name);
+    setEditingCategoryKind(category.kind);
+    setLocalError(""); setLocalSuccess("");
+  }
+
+  async function saveCategoryEdit(event: FormEvent) {
+    event.preventDefault(); setLocalError(""); setLocalSuccess("");
+    const category = data.categories.find(item => item.id === editingCategoryId);
+    if (!category) return;
+    try {
+      const nextName = editingCategoryName.trim();
+      if (!nextName) throw new Error("Enter a category name.");
+      if (editingCategoryKind !== category.kind && categoryIsReferenced(category.id)) {
+        throw new Error("A category used by transactions, plans, or recurring items cannot change type. You can still rename it.");
+      }
+      await run(() => updateRow(client, "categories", category.id, { name: nextName, kind: editingCategoryKind }, category.version));
+      setEditingCategoryId(null);
+      setLocalSuccess(`Category “${nextName}” updated. Its existing records now show this name.`);
+    } catch (error) { setLocalError(errorText(error)); }
+  }
+
+  async function removeCategory(category: FinanceData["categories"][number]) {
+    setLocalError(""); setLocalSuccess("");
+    const linkedRecurring = data.recurringTemplates.some(item => item.category_id === category.id);
+    const currentMonth = monthStart(todayInIndia());
+    const currentOrFuturePlan = data.planItems.some(item => item.category_id === category.id && data.monthlyPlans.some(plan => plan.id === item.plan_id && plan.month_start >= currentMonth));
+    if (linkedRecurring || currentOrFuturePlan) {
+      setLocalError(`“${category.name}” is used by a recurring item or a current/future monthly plan. Change those items to another category before removing it.`);
+      return;
+    }
+    const referenced = categoryIsReferenced(category.id);
+    const action = referenced ? "archive it so past records keep their category" : "permanently delete it";
+    if (!window.confirm(`Remove “${category.name}”? This will ${action}.`)) return;
+    try {
+      if (referenced) await run(() => updateRow(client, "categories", category.id, { active: false }, category.version));
+      else await run(() => deleteRow(client, "categories", category.id));
+      if (editingCategoryId === category.id) setEditingCategoryId(null);
+      setLocalSuccess(referenced ? `“${category.name}” archived. Past records are unchanged.` : `“${category.name}” deleted.`);
+    } catch (error) { setLocalError(errorText(error)); }
+  }
+
+  async function restoreCategory(category: FinanceData["categories"][number]) {
+    setLocalError(""); setLocalSuccess("");
+    try {
+      await run(() => updateRow(client, "categories", category.id, { active: true }, category.version));
+      setLocalSuccess(`“${category.name}” restored.`);
+    } catch (error) { setLocalError(errorText(error)); }
   }
 
   async function addDefaults() {
@@ -904,10 +964,16 @@ export function SettingsView() {
   const previewTotals = previewData ? totalsOn(previewData) : null;
   return <div className="page-stack">
     <div className="two-column-grid">
-      <Section title="Categories" description="Categories organize transactions and budget lines.">
+      <Section title="Categories" description="Edit names here, or remove categories you no longer use. Categories with past records are archived to preserve history.">
         <button className="button button-secondary" onClick={() => void addDefaults()}>Add suggested categories</button>
         <form className="form-stack inline-form" onSubmit={addCategory}><div className="form-grid"><label className="field">Name<input className="input" required value={categoryName} onChange={event => setCategoryName(event.target.value)} /></label><label className="field">Type<select className="select" value={categoryKind} onChange={event => setCategoryKind(event.target.value as "income" | "expense")}><option value="expense">Expense</option><option value="income">Income</option></select></label></div><button className="button button-primary">Add category</button></form>
-        <div className="tag-list">{data.categories.map(item => <span key={item.id} className="pill">{item.name} · {item.kind}</span>)}</div>
+        {data.categories.length ? <div className="list-stack category-list">{data.categories.map(item => <div className="list-row category-row" key={item.id}>
+          {editingCategoryId === item.id ? <form className="form-stack category-edit-form" onSubmit={saveCategoryEdit}>
+            <div className="form-grid"><label className="field">Name<input className="input" required maxLength={100} value={editingCategoryName} onChange={event => setEditingCategoryName(event.target.value)} /></label><label className="field">Type<select className="select" disabled={categoryIsReferenced(item.id)} value={editingCategoryKind} onChange={event => setEditingCategoryKind(event.target.value as "income" | "expense")}><option value="expense">Expense</option><option value="income">Income</option></select></label></div>
+            {categoryIsReferenced(item.id) && <p className="muted">Type cannot change while this category has linked records.</p>}
+            <div className="list-actions"><button className="button button-primary" type="submit">Save</button><button className="button button-quiet" type="button" onClick={() => setEditingCategoryId(null)}>Cancel</button></div>
+          </form> : <><span><strong>{item.name}</strong><span className="muted"> · {item.kind}</span>{!item.active && <span className="pill">Archived</span>}</span><span className="list-actions"><button className="button button-quiet" type="button" onClick={() => startCategoryEdit(item)}>Edit</button>{item.active ? <button className="button button-quiet" type="button" onClick={() => void removeCategory(item)}>Remove</button> : <button className="button button-quiet" type="button" onClick={() => void restoreCategory(item)}>Restore</button>}</span></>}
+        </div>)}</div> : <Empty text="No categories yet." />}
       </Section>
       <Section title="Account security" description="Only the owner account can access this application's financial data."><p>Signed in as the private owner. Sync status: <strong>{syncStatus}</strong>.</p><p>{pending.length} unsynced transaction{pending.length === 1 ? "" : "s"} on this device.</p><form className="form-stack" onSubmit={changePassword}><label className="field">New password<input className="input" type="password" minLength={12} autoComplete="new-password" value={newPassword} onChange={event => setNewPassword(event.target.value)} /></label><button className="button button-secondary">Update password</button></form><button className="button button-quiet" onClick={() => void signOut()}>Sign out</button></Section>
     </div>

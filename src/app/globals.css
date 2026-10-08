@@ -256,6 +256,11 @@ svg { display: block; }
 .list-row .muted { color: var(--ink-faint); font-size: .74rem; }
 .list-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 7px; flex: 0 0 auto; }
 .list-actions .button, .data-table .button { min-height: 31px; padding: 6px 9px; font-size: .72rem; border-radius: 8px; }
+.category-list { margin-top: 18px; }
+.category-row { align-items: center; }
+.category-row .pill { margin-left: 8px; }
+.category-edit-form { width: 100%; }
+.category-edit-form .muted { margin: 0; }
 .tag-list { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 16px; }
 .goal-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 270px), 1fr)); align-items: start; gap: 16px; }
 .goal-card-actions { display: flex; flex-wrap: wrap; gap: 5px; padding: 11px 0 0; }
