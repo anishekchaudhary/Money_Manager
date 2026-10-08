@@ -201,6 +201,7 @@ export function TransactionsView() {
     && !data.goalCompletionPayments.some(payment => payment.transaction_id === item.id);
   const canCorrect = (item: MoneyTransaction) => canVoid(item)
     && !data.recurringOccurrences.some(occurrence => occurrence.actual_transaction_id === item.id)
+    && !item.plan_item_id
     && item.kind !== "transfer" && item.kind !== "investment_contribution";
 
   const transactions = [...data.transactions]
@@ -254,6 +255,13 @@ export function MonthlyPlanView() {
   const [editingAmount, setEditingAmount] = useState("");
   const [editingDue, setEditingDue] = useState("");
   const [editingFundingAccount, setEditingFundingAccount] = useState("");
+  const [paymentItem, setPaymentItem] = useState<PlanItem | null>(null);
+  const [paymentAmount, setPaymentAmount] = useState("");
+  const [paymentDate, setPaymentDate] = useState(todayInIndia());
+  const [paymentMethod, setPaymentMethod] = useState("");
+  const [paymentNote, setPaymentNote] = useState("");
+  const [linkingItem, setLinkingItem] = useState<PlanItem | null>(null);
+  const [linkTransactionId, setLinkTransactionId] = useState("");
   const plan = data.monthlyPlans.find(item => item.month_start === month);
   const items = data.planItems.filter(item => item.plan_id === plan?.id);
   const plannedIncome = items.filter(item => item.kind === "income").reduce((sum, item) => sum + Number(item.planned_paise), 0);
@@ -277,7 +285,7 @@ export function MonthlyPlanView() {
     if (!plan) return;
     try {
       if (["income", "fixed_expense", "variable_expense"].includes(kind) && !category) throw new Error("Choose a category so actual amounts can be matched accurately.");
-      if (category && items.some(item => item.category_id === category && (item.kind === "income") === (kind === "income") && (!recurringTemplate || !item.recurring_template_id))) throw new Error("This category already has an unlinked plan line this month. Edit that line or use separate linked recurring items.");
+      if (kind === "income" && category && items.some(item => item.kind === "income" && item.category_id === category && !item.recurring_template_id && !recurringTemplate)) throw new Error("This income category already has an unlinked plan line this month.");
       if (recurringTemplate && items.some(item => item.recurring_template_id === recurringTemplate)) throw new Error("This recurring item is already linked to a plan line this month.");
       if (kind === "saving" && items.some(item => item.kind === "saving" && item.goal_id === goal)) throw new Error("This goal already has a saving plan line this month.");
       if (kind === "investment" && items.some(item => item.kind === "investment" && item.account_id === account)) throw new Error("This holding already has an investment plan line this month.");
@@ -301,6 +309,62 @@ export function MonthlyPlanView() {
     catch (error) { setLocalError(errorText(error)); }
   }
 
+  function reviewPlanPayment(item: PlanItem) {
+    setPaymentItem(item);
+    setPaymentAmount(rupeesFromPaise(Number(item.planned_paise)));
+    setPaymentDate(month === monthStart(todayInIndia()) ? todayInIndia() : month);
+    setPaymentMethod("");
+    setPaymentNote(item.name);
+    setLocalError("");
+  }
+
+  async function confirmPlanPayment(event: FormEvent) {
+    event.preventDefault();
+    if (!paymentItem) return;
+    setLocalError("");
+    try {
+      await run(async () => {
+        const { error } = await client.rpc("record_plan_item_payment", {
+          p_plan_item_id: paymentItem.id,
+          p_transaction_id: crypto.randomUUID(),
+          p_occurred_on: paymentDate,
+          p_amount_paise: paiseFromRupees(paymentAmount),
+          p_payment_method: paymentMethod.trim() || null,
+          p_note: paymentNote.trim() || null,
+        });
+        if (error) throw error;
+      });
+      setPaymentItem(null);
+    } catch (error) { setLocalError(errorText(error)); }
+  }
+
+  async function confirmTransactionLink(event: FormEvent) {
+    event.preventDefault();
+    if (!linkingItem || !linkTransactionId) return;
+    setLocalError("");
+    try {
+      await run(async () => {
+        const { error } = await client.rpc("link_plan_item_transaction", {
+          p_plan_item_id: linkingItem.id,
+          p_transaction_id: linkTransactionId,
+        });
+        if (error) throw error;
+      });
+      setLinkingItem(null);
+      setLinkTransactionId("");
+    } catch (error) { setLocalError(errorText(error)); }
+  }
+
+  function linkCandidates(item: PlanItem) {
+    return data.transactions.filter(transaction => transaction.kind === "expense"
+      && !transaction.plan_item_id
+      && transaction.occurred_on.slice(0, 7) === month.slice(0, 7)
+      && transaction.category_id === item.category_id
+      && (!item.funding_account_id || transaction.source_account_id === item.funding_account_id)
+      && !data.transactions.some(reversal => reversal.reverses_transaction_id === transaction.id)
+      && !data.recurringOccurrences.some(occurrence => occurrence.actual_transaction_id === transaction.id));
+  }
+
   const displayMonth = monthLabel(month);
   return <div className="page-stack">
     <div className="section-actions"><label className="field">Planning month<input className="input" type="month" value={month.slice(0, 7)} onChange={event => { const selected = monthStartFromInput(event.target.value); if (selected) setMonth(selected); }} /></label><span className="pill">{displayMonth}</span></div>
@@ -309,13 +373,22 @@ export function MonthlyPlanView() {
       {localError && <p className="form-error" role="alert">{localError}</p>}
     </Section> : <>
       <div className="section-actions"><span className="pill">{plan.status === "draft" ? "Draft · review before using" : "Active plan"}</span>{plan.status === "draft" && <button className="button button-primary" onClick={() => void run(() => updateRow(client, "monthly_plans", plan.id, { status: "active" }, plan.version)).catch(error => setLocalError(errorText(error)))}>Save and activate plan</button>}</div>
+      {items.some(item => !item.recurring_template_id && (item.kind === "fixed_expense" || item.kind === "variable_expense") && linkCandidates(item).length > 0) && <div className="notice-banner" role="status">Recorded expenses are not assigned to plan lines automatically. Use “Use recorded transaction” below to connect an existing payment without spending twice.</div>}
       <div className="stat-grid"><StatCard label="Expected income" valuePaise={plannedIncome} /><StatCard label="Planned spending" valuePaise={plannedExpense} /><StatCard label="Savings & investing" valuePaise={plannedSaving} /><StatCard label="Unassigned" valuePaise={plannedIncome - plannedExpense - plannedSaving} tone={plannedIncome < plannedExpense + plannedSaving ? "warm" : "accent"} /></div>
       {plannedIncome < plannedExpense + plannedSaving && <div className="notice-banner" role="status">This plan uses more than the expected income. Check the amounts before relying on it.</div>}
-      <Section title="Plan versus actual" description="Actuals come from recorded transactions and goal allocations; plans are never counted as transactions.">
-        {items.length ? <div className="table-wrap"><table className="data-table"><thead><tr><th>Item</th><th>Type</th><th>Planned</th><th>Actual</th><th>Remaining</th><th></th></tr></thead><tbody>{items.map(item => {
+      <Section title="Plan versus actual" description="Difference is planned minus actual; once an item is marked used, underspending becomes usable cash and overspending reduces it.">
+        {items.length ? <div className="table-wrap"><table className="data-table"><thead><tr><th>Item</th><th>Type</th><th>Planned</th><th>Actual</th><th>Difference</th><th></th></tr></thead><tbody>{items.map(item => {
           const actual = actualForPlanItem(item, data, month);
           return <tr key={item.id}><td><strong>{item.name}</strong>{item.due_day && <span className="muted"> · due {item.due_day}</span>}{item.kind !== "income" && (editingItem === item.id ? <select className="select" aria-label={`Funding account for ${item.name}`} value={editingFundingAccount} onChange={event => setEditingFundingAccount(event.target.value)}><option value="">Choose funding account</option>{cashFundingAccounts.map(funding => <option key={funding.id} value={funding.id}>{funding.name}</option>)}</select> : <small className="muted"> · from {data.accounts.find(funding => funding.id === (item.funding_account_id || data.recurringTemplates.find(template => template.id === item.recurring_template_id)?.source_account_id))?.name || "unassigned account"}</small>)}</td><td>{planLabels[item.kind]}</td><td>{editingItem === item.id ? <input className="input" aria-label={`Planned amount for ${item.name}`} type="number" min="0" step="0.01" value={editingAmount} onChange={event => setEditingAmount(event.target.value)} /> : formatMoney(Number(item.planned_paise))}</td><td>{formatMoney(actual)}</td><td>{editingItem === item.id ? <input className="input" aria-label={`Due day for ${item.name}`} type="number" min="1" max="31" placeholder="Due day" value={editingDue} onChange={event => setEditingDue(event.target.value)} /> : formatMoney(Number(item.planned_paise) - actual)}</td><td>{editingItem === item.id ? <><button className="button button-secondary" onClick={() => void saveItemEdit(item)}>Save</button><button className="button button-quiet" onClick={() => setEditingItem(null)}>Cancel</button></> : <><button className="button button-quiet" onClick={() => { setEditingItem(item.id); setEditingAmount(rupeesFromPaise(Number(item.planned_paise))); setEditingDue(item.due_day ? String(item.due_day) : ""); const source = item.funding_account_id || data.recurringTemplates.find(template => template.id === item.recurring_template_id)?.source_account_id; setEditingFundingAccount(cashFundingAccounts.some(funding => funding.id === source) ? source || "" : ""); }}>Edit</button><button className="button button-quiet" onClick={() => { if (window.confirm(`Remove planned item “${item.name}”? Actual transactions stay.`)) void run(() => deleteRow(client, "plan_items", item.id)).catch(() => {}); }}>Remove</button></>}</td></tr>;
         })}</tbody></table></div> : <Empty text="This plan is empty. Add expected income, expenses, and savings below." />}
+      </Section>
+      <Section title="Use a planned expense" description="Each line holds its planned amount until you confirm its actual payment. A lower payment releases the difference; a higher one uses additional available cash.">
+        <div className="list-stack">{items.filter(item => item.kind === "fixed_expense" || item.kind === "variable_expense").map(item => {
+          const linked = Boolean(item.recurring_template_id);
+          const paid = data.transactions.some(transaction => transaction.plan_item_id === item.id && transaction.kind === "expense" && !data.transactions.some(reversal => reversal.reverses_transaction_id === transaction.id));
+          const occurrence = linked ? data.recurringOccurrences.find(row => row.template_id === item.recurring_template_id && row.month_start === month) : null;
+          return <div className="list-row" key={item.id}><span><strong>{item.name}</strong><span className="muted"> · {formatMoney(Number(item.planned_paise))} planned · {data.categories.find(category => category.id === item.category_id)?.name || "Expense"}</span></span><span className="list-actions">{paid || occurrence?.status === "completed" ? <span className="pill">Used</span> : linked ? <a className="button button-secondary button-small" href="/recurring">Mark paid in Recurring</a> : <><button className="button button-secondary button-small" disabled={plan.status !== "active" || !item.funding_account_id || month > monthStart(todayInIndia())} onClick={() => reviewPlanPayment(item)}>Mark used</button>{linkCandidates(item).length > 0 && <button className="button button-quiet button-small" onClick={() => { setLinkingItem(item); setLinkTransactionId(""); setLocalError(""); }}>Use recorded transaction</button>}</>}</span></div>;
+        })}</div>
       </Section>
       <Section title="Add a planned item"><form className="form-stack" onSubmit={addItem}><div className="form-grid">
         <label className="field">Name<input className="input" required placeholder="e.g. Rent" value={name} onChange={event => setName(event.target.value)} /></label>
@@ -327,7 +400,9 @@ export function MonthlyPlanView() {
         {kind === "saving" && <label className="field">Goal<select className="select" required value={goal} onChange={event => setGoal(event.target.value)}><option value="">Choose goal</option>{data.goals.filter(item => item.status === "active").map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>}
         {kind === "investment" && accountSelect(data.accounts.filter(item => item.kind === "investment"), account, setAccount, "Investment holding")}
         {kind !== "income" && <label className="field">Funding bank or cash account<select className="select" value={fundingAccount} onChange={event => setFundingAccount(event.target.value)}><option value="">Choose funding account</option>{cashFundingAccounts.map(funding => <option key={funding.id} value={funding.id}>{funding.name}</option>)}</select></label>}
-      </div>{localError && <p className="form-error" role="alert">{localError}</p>}<button className="button button-primary">Add to plan</button></form></Section>
+      </div>{localError && !paymentItem && <p className="form-error" role="alert">{localError}</p>}<button className="button button-primary">Add to plan</button></form></Section>
+      {paymentItem && <div className="modal-backdrop" role="presentation"><section className="modal-panel surface-card" role="dialog" aria-modal="true" aria-labelledby="plan-payment-title"><div className="section-heading"><div><h2 id="plan-payment-title">Use {paymentItem.name}</h2><p>Confirm the actual amount before recording a transaction. The unused reservation will be released.</p></div><button type="button" className="button button-quiet" aria-label="Close" onClick={() => setPaymentItem(null)}>✕</button></div><form className="form-stack" onSubmit={confirmPlanPayment}>{amountInput(paymentAmount, setPaymentAmount, "Actual amount (₹)")}<label className="field">Payment date<input className="input" type="date" min={month} max={todayInIndia()} required value={paymentDate} onChange={event => setPaymentDate(event.target.value)} /></label><label className="field">Payment method<input className="input" value={paymentMethod} onChange={event => setPaymentMethod(event.target.value)} placeholder="e.g. UPI, bank transfer" /></label><label className="field">Note<input className="input" value={paymentNote} onChange={event => setPaymentNote(event.target.value)} /></label><p className="muted">From {data.accounts.find(account => account.id === paymentItem.funding_account_id)?.name || "funding account"}. If this payment has already been recorded elsewhere, cancel to avoid duplicating it.</p>{localError && <p className="form-error" role="alert">{localError}</p>}<div className="form-actions"><button className="button button-primary">Confirm payment</button><button type="button" className="button button-secondary" onClick={() => setPaymentItem(null)}>Cancel</button></div></form></section></div>}
+      {linkingItem && <div className="modal-backdrop" role="presentation"><section className="modal-panel surface-card" role="dialog" aria-modal="true" aria-labelledby="plan-link-title"><div className="section-heading"><div><h2 id="plan-link-title">Use a recorded expense for {linkingItem.name}</h2><p>This links an existing transaction; it does not withdraw money again.</p></div><button type="button" className="button button-quiet" aria-label="Close" onClick={() => setLinkingItem(null)}>✕</button></div><form className="form-stack" onSubmit={confirmTransactionLink}><label className="field">Recorded transaction<select className="select" required value={linkTransactionId} onChange={event => setLinkTransactionId(event.target.value)}><option value="">Choose a transaction</option>{linkCandidates(linkingItem).map(transaction => <option key={transaction.id} value={transaction.id}>{transaction.occurred_on} · {formatMoney(Number(transaction.amount_paise))} · {transaction.note || data.accounts.find(account => account.id === transaction.source_account_id)?.name || "Expense"}</option>)}</select></label>{localError && <p className="form-error" role="alert">{localError}</p>}<div className="form-actions"><button className="button button-primary">Confirm link</button><button type="button" className="button button-secondary" onClick={() => setLinkingItem(null)}>Cancel</button></div></form></section></div>}
     </>}
   </div>;
 }

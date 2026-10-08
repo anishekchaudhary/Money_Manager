@@ -43,6 +43,7 @@ export interface MoneyTransaction {
   note: string | null;
   interest_paise: number;
   payment_method?: string | null;
+  plan_item_id?: string | null;
   goal_id?: string | null;
   reverses_transaction_id?: string | null;
   created_at?: string;

@@ -29,7 +29,7 @@ test("usable cash subtracts goals and remaining plan commitments, without duplic
   assert.equal(result.locations.find(item => item.account.id === "bank").usablePaise, 45_000);
 });
 
-test("unassigned commitments reduce total, while recorded expense releases its plan reserve", () => {
+test("an ordinary expense does not release a plan until linked to that item", () => {
   const expense = transaction("paid", "expense", 6_000, { source_account_id: "bank", category_id: "food" });
   const data = dataWith({
     accounts: [account("bank", "bank", 100_000)],
@@ -39,9 +39,13 @@ test("unassigned commitments reduce total, while recorded expense releases its p
     planItems: [planItem("food budget", "variable_expense", 20_000, { category_id: "food", funding_account_id: null })],
   });
   const result = dashboardLiquidity(data, "2026-10-08");
-  assert.equal(result.unassignedPaise, 14_000);
+  assert.equal(result.unassignedPaise, 20_000);
   assert.equal(result.locations[0].usablePaise, 94_000);
-  assert.equal(result.usablePaise, 80_000);
+  assert.equal(result.usablePaise, 74_000);
+  expense.plan_item_id = "food budget";
+  const linked = dashboardLiquidity(data, "2026-10-08");
+  assert.equal(linked.unassignedPaise, 0);
+  assert.equal(linked.usablePaise, 94_000);
 });
 
 test("monthly flow counts card spending once, investments once, and cash goal allocation once", () => {
@@ -129,4 +133,52 @@ test("current unpaid EMI is reserved, then released when marked paid", () => {
   const after = dashboardLiquidity(data, "2026-10-08");
   assert.equal(after.emiReservedPaise, 0);
   assert.equal(after.usablePaise, 90_000);
+});
+
+test("same-category plan lines stay separate and a confirmed lower payment releases the difference", () => {
+  const rent = planItem("rent", "fixed_expense", 41_000, { category_id: "housing" });
+  const electricity = planItem("electricity", "fixed_expense", 2_000, { category_id: "housing" });
+  const data = dataWith({
+    accounts: [account("bank", "bank", 100_000)],
+    categories: [{ id: "housing", name: "Housing", kind: "expense" }],
+    monthlyPlans: [{ id: "plan", month_start: month, status: "active" }],
+    planItems: [rent, electricity],
+  });
+  assert.equal(dashboardLiquidity(data, "2026-10-08").usablePaise, 57_000);
+  data.transactions.push(transaction("paid-rent", "expense", 39_000, { source_account_id: "bank", category_id: "housing", plan_item_id: rent.id }));
+  data.entries.push(entry("rent-out", "paid-rent", "bank", -39_000));
+  assert.equal(actualForPlanItem(rent, data, month), 39_000);
+  assert.equal(actualForPlanItem(electricity, data, month), 0);
+  assert.equal(dashboardLiquidity(data, "2026-10-08").plannedReservedPaise, 2_000);
+  assert.equal(dashboardLiquidity(data, "2026-10-08").usablePaise, 59_000);
+});
+
+test("confirmed higher payment releases its line and takes excess from usable cash", () => {
+  const rent = planItem("rent", "fixed_expense", 41_000, { category_id: "housing" });
+  const data = dataWith({
+    accounts: [account("bank", "bank", 100_000)],
+    monthlyPlans: [{ id: "plan", month_start: month, status: "active" }],
+    planItems: [rent],
+  });
+  assert.equal(dashboardLiquidity(data, "2026-10-08").usablePaise, 59_000);
+  data.transactions.push(transaction("paid-rent", "expense", 43_000, { source_account_id: "bank", category_id: "housing", plan_item_id: rent.id }));
+  data.entries.push(entry("rent-out", "paid-rent", "bank", -43_000));
+  assert.equal(dashboardLiquidity(data, "2026-10-08").usablePaise, 57_000);
+});
+
+test("voiding a plan-linked payment restores the unused reservation", () => {
+  const rent = planItem("rent", "fixed_expense", 41_000, { category_id: "housing" });
+  const data = dataWith({
+    accounts: [account("bank", "bank", 100_000)],
+    monthlyPlans: [{ id: "plan", month_start: month, status: "active" }],
+    planItems: [rent],
+    transactions: [
+      transaction("paid-rent", "expense", 39_000, { source_account_id: "bank", category_id: "housing", plan_item_id: rent.id }),
+      transaction("void", "reversal", 39_000, { reverses_transaction_id: "paid-rent" }),
+    ],
+    entries: [entry("payment", "paid-rent", "bank", -39_000), entry("refund", "void", "bank", 39_000)],
+  });
+  assert.equal(actualForPlanItem(rent, data, month), 0);
+  assert.equal(dashboardLiquidity(data, "2026-10-08").plannedReservedPaise, 41_000);
+  assert.equal(dashboardLiquidity(data, "2026-10-08").usablePaise, 59_000);
 });

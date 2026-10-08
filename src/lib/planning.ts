@@ -38,9 +38,8 @@ export function actualForPlanItem(item: PlanItem, data: FinanceData, month: stri
         .filter((transaction) => matchingIds.has(transaction.id))
         .reduce((sum, transaction) => sum + Number(transaction.amount_paise), 0);
     }
-    return transactions
-      .filter((transaction) => transaction.category_id === item.category_id && (transaction.kind === "expense" || transaction.kind === "loan_payment"))
-      .reduce((sum, transaction) => sum + (transaction.kind === "loan_payment" ? Number(transaction.interest_paise || 0) : Number(transaction.amount_paise)), 0);
+    const direct = transactions.filter((transaction) => transaction.plan_item_id === item.id && transaction.kind === "expense");
+    return direct.reduce((sum, transaction) => sum + Number(transaction.amount_paise), 0);
   }
 
   if (item.kind === "investment") {

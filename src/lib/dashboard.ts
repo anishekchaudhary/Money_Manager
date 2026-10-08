@@ -81,6 +81,7 @@ export function dashboardLiquidity(data: FinanceData, today = todayInIndia()): D
     const template = data.recurringTemplates.find(row => row.id === item.recurring_template_id);
     const occurrence = template && data.recurringOccurrences.find(row => row.template_id === template.id && row.month_start === month);
     let amountPaise = remainingPlanAmount(item, data, month);
+    if (!template && (item.kind === "fixed_expense" || item.kind === "variable_expense") && effectiveTransactions(data).some(transaction => transaction.plan_item_id === item.id && transaction.kind === "expense")) amountPaise = 0;
     if (template) {
       linkedCurrent.add(template.id);
       if (item.kind === "fixed_expense" || item.kind === "investment") {
@@ -89,7 +90,7 @@ export function dashboardLiquidity(data: FinanceData, today = todayInIndia()): D
       } else if (occurrence?.status === "pending") {
         amountPaise = Math.max(amountPaise, Number(occurrence.expected_amount_paise));
       }
-    } else if (item.category_id && (item.kind === "fixed_expense" || item.kind === "variable_expense")) {
+    } else if (amountPaise > 0 && item.category_id && (item.kind === "fixed_expense" || item.kind === "variable_expense")) {
       unlinkedPlanCategories.add(item.category_id);
     }
     const linkedAccount = template?.source_account_id;
