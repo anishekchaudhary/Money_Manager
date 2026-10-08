@@ -1,5 +1,5 @@
-import { formatMoney } from "@/components/money";
-import { effectiveTransactions, monthStart } from "./finance";
+import { formatMoney } from "../components/money.ts";
+import { effectiveTransactions, monthStart } from "./finance.ts";
 import type { AlertState, FinanceData, PlanItem } from "./types";
 
 export interface AppAlert {
@@ -45,12 +45,12 @@ export function actualForPlanItem(item: PlanItem, data: FinanceData, month: stri
 
   if (item.kind === "investment") {
     return transactions
-      .filter((transaction) => transaction.kind === "investment_contribution" && (!item.account_id || transaction.destination_account_id === item.account_id))
+      .filter((transaction) => (transaction.kind === "investment_contribution" || (transaction.kind === "transfer" && data.accounts.some((account) => account.id === transaction.destination_account_id && account.kind === "investment"))) && (!item.account_id || transaction.destination_account_id === item.account_id))
       .reduce((sum, transaction) => sum + Number(transaction.amount_paise), 0);
   }
 
   const netCashAllocation = data.goalAllocationChanges
-    .filter((change) => change.effective_on.slice(0, 7) === month.slice(0, 7) && change.goal_id === item.goal_id && ["quick_save", "manual"].includes(change.reason))
+    .filter((change) => change.effective_on.slice(0, 7) === month.slice(0, 7) && change.goal_id === item.goal_id && (!item.funding_account_id || change.account_id === item.funding_account_id) && ["quick_save", "manual"].includes(change.reason))
     .reduce((sum, change) => sum + Number(change.new_cash_amount_paise || 0) - Number(change.old_cash_amount_paise || 0), 0);
   return Math.max(0, netCashAllocation);
 }

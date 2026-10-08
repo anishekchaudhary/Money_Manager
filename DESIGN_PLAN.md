@@ -215,3 +215,6 @@ Review these decisions and the accounting examples before implementation. The da
 The application and SQL migration now live in this repository. [SETUP.md](SETUP.md) is the step-by-step path from an empty Supabase project to a private Vercel deployment. The SQL finance rules have passed local PostgreSQL smoke tests, and the web app passes a production build; the owner sign-in, cloud RLS, backup/restore, phone installation, and two-device sync still require a real Supabase/Vercel setup and the acceptance checks in that guide. No production financial data should be entered before those checks.
 
 This first build intentionally has no live bank/broker integration, background push alerts, or automated investment prices. In-app due and budget alerts use the fixed 85% warning threshold. Investment holdings show recorded market value and valuation date, but tax cost basis and account reconciliation are not yet dedicated workflows. Routine transactions can be corrected through an auditable reversal; transfers that moved goal allocations, goal-completion payments, and some linked records require a reviewed manual correction rather than a one-click edit. A past-dated transfer into accounts with goal-allocation or valuation history is rejected to avoid inventing incorrect proportional history.
+
+
+## For Personal Refrence 

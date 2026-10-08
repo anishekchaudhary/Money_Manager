@@ -3,6 +3,7 @@ export type { AppShellProps, NavigationItem, NavIcon, SyncStatus } from "./AppSh
 export { StatCard } from "./StatCard";
 export type { StatCardProps } from "./StatCard";
 export { LineChart } from "./LineChart";
+export { StackedFlowChart } from "./StackedFlowChart";
 export type { LineChartProps, ChartSeries } from "./LineChart";
 export { AlertCard } from "./AlertCard";
 export type { AlertCardProps } from "./AlertCard";

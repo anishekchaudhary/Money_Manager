@@ -246,11 +246,13 @@ export function MonthlyPlanView() {
   const [category, setCategory] = useState("");
   const [goal, setGoal] = useState("");
   const [account, setAccount] = useState("");
+  const [fundingAccount, setFundingAccount] = useState("");
   const [recurringTemplate, setRecurringTemplate] = useState("");
   const [localError, setLocalError] = useState("");
   const [editingItem, setEditingItem] = useState<string | null>(null);
   const [editingAmount, setEditingAmount] = useState("");
   const [editingDue, setEditingDue] = useState("");
+  const [editingFundingAccount, setEditingFundingAccount] = useState("");
   const plan = data.monthlyPlans.find(item => item.month_start === month);
   const items = data.planItems.filter(item => item.plan_id === plan?.id);
   const plannedIncome = items.filter(item => item.kind === "income").reduce((sum, item) => sum + Number(item.planned_paise), 0);
@@ -258,6 +260,7 @@ export function MonthlyPlanView() {
   const plannedSaving = items.filter(item => item.kind === "saving" || item.kind === "investment").reduce((sum, item) => sum + Number(item.planned_paise), 0);
   const previousPlan = data.monthlyPlans.find(item => item.month_start === nextMonth(month, -1));
   const matchingTemplates = data.recurringTemplates.filter(template => template.active && (kind === "income" ? template.kind === "income" : kind === "fixed_expense" || kind === "variable_expense" ? template.kind === "expense" : kind === "investment" ? template.kind === "investment_contribution" : false));
+  const cashFundingAccounts = data.accounts.filter(item => item.active && (item.kind === "cash" || item.kind === "bank"));
 
   async function createPlan(copyPrevious: boolean) {
     setLocalError("");
@@ -277,19 +280,23 @@ export function MonthlyPlanView() {
       if (recurringTemplate && items.some(item => item.recurring_template_id === recurringTemplate)) throw new Error("This recurring item is already linked to a plan line this month.");
       if (kind === "saving" && items.some(item => item.kind === "saving" && item.goal_id === goal)) throw new Error("This goal already has a saving plan line this month.");
       if (kind === "investment" && items.some(item => item.kind === "investment" && item.account_id === account)) throw new Error("This holding already has an investment plan line this month.");
+      const linkedTemplate = data.recurringTemplates.find(item => item.id === recurringTemplate);
+      const fundedByCard = linkedTemplate?.source_account_id && data.accounts.find(item => item.id === linkedTemplate.source_account_id)?.kind === "card";
+      if (kind !== "income" && !fundingAccount && !fundedByCard) throw new Error("Choose the bank or cash account that funds this plan.");
       await run(() => insertRow(client, "plan_items", ownerId, {
         id: crypto.randomUUID(), plan_id: plan.id, name: name.trim(), kind,
         planned_paise: paiseFromRupees(amount), due_day: dueDay ? Number(dueDay) : null,
         category_id: category || null, goal_id: goal || null, account_id: account || null,
+        funding_account_id: kind === "income" ? null : fundingAccount || null,
         recurring_template_id: recurringTemplate || null,
       }));
-      setName(""); setAmount(""); setDueDay(""); setRecurringTemplate("");
+      setName(""); setAmount(""); setDueDay(""); setRecurringTemplate(""); setFundingAccount("");
     } catch (error) { setLocalError(errorText(error)); }
   }
 
   async function saveItemEdit(item: PlanItem) {
     setLocalError("");
-    try { await run(() => updateRow(client, "plan_items", item.id, { planned_paise: paiseFromRupees(editingAmount), due_day: editingDue ? Number(editingDue) : null }, item.version)); setEditingItem(null); }
+    try { await run(() => updateRow(client, "plan_items", item.id, { planned_paise: paiseFromRupees(editingAmount), due_day: editingDue ? Number(editingDue) : null, funding_account_id: item.kind === "income" ? null : editingFundingAccount || null }, item.version)); setEditingItem(null); }
     catch (error) { setLocalError(errorText(error)); }
   }
 
@@ -306,18 +313,19 @@ export function MonthlyPlanView() {
       <Section title="Plan versus actual" description="Actuals come from recorded transactions and goal allocations; plans are never counted as transactions.">
         {items.length ? <div className="table-wrap"><table className="data-table"><thead><tr><th>Item</th><th>Type</th><th>Planned</th><th>Actual</th><th>Remaining</th><th></th></tr></thead><tbody>{items.map(item => {
           const actual = actualForPlanItem(item, data, month);
-          return <tr key={item.id}><td><strong>{item.name}</strong>{item.due_day && <span className="muted"> · due {item.due_day}</span>}</td><td>{planLabels[item.kind]}</td><td>{editingItem === item.id ? <input className="input" aria-label={`Planned amount for ${item.name}`} type="number" min="0" step="0.01" value={editingAmount} onChange={event => setEditingAmount(event.target.value)} /> : formatMoney(Number(item.planned_paise))}</td><td>{formatMoney(actual)}</td><td>{editingItem === item.id ? <input className="input" aria-label={`Due day for ${item.name}`} type="number" min="1" max="31" placeholder="Due day" value={editingDue} onChange={event => setEditingDue(event.target.value)} /> : formatMoney(Number(item.planned_paise) - actual)}</td><td>{editingItem === item.id ? <><button className="button button-secondary" onClick={() => void saveItemEdit(item)}>Save</button><button className="button button-quiet" onClick={() => setEditingItem(null)}>Cancel</button></> : <><button className="button button-quiet" onClick={() => { setEditingItem(item.id); setEditingAmount(rupeesFromPaise(Number(item.planned_paise))); setEditingDue(item.due_day ? String(item.due_day) : ""); }}>Edit</button><button className="button button-quiet" onClick={() => { if (window.confirm(`Remove planned item “${item.name}”? Actual transactions stay.`)) void run(() => deleteRow(client, "plan_items", item.id)).catch(() => {}); }}>Remove</button></>}</td></tr>;
+          return <tr key={item.id}><td><strong>{item.name}</strong>{item.due_day && <span className="muted"> · due {item.due_day}</span>}{item.kind !== "income" && (editingItem === item.id ? <select className="select" aria-label={`Funding account for ${item.name}`} value={editingFundingAccount} onChange={event => setEditingFundingAccount(event.target.value)}><option value="">Choose funding account</option>{cashFundingAccounts.map(funding => <option key={funding.id} value={funding.id}>{funding.name}</option>)}</select> : <small className="muted"> · from {data.accounts.find(funding => funding.id === (item.funding_account_id || data.recurringTemplates.find(template => template.id === item.recurring_template_id)?.source_account_id))?.name || "unassigned account"}</small>)}</td><td>{planLabels[item.kind]}</td><td>{editingItem === item.id ? <input className="input" aria-label={`Planned amount for ${item.name}`} type="number" min="0" step="0.01" value={editingAmount} onChange={event => setEditingAmount(event.target.value)} /> : formatMoney(Number(item.planned_paise))}</td><td>{formatMoney(actual)}</td><td>{editingItem === item.id ? <input className="input" aria-label={`Due day for ${item.name}`} type="number" min="1" max="31" placeholder="Due day" value={editingDue} onChange={event => setEditingDue(event.target.value)} /> : formatMoney(Number(item.planned_paise) - actual)}</td><td>{editingItem === item.id ? <><button className="button button-secondary" onClick={() => void saveItemEdit(item)}>Save</button><button className="button button-quiet" onClick={() => setEditingItem(null)}>Cancel</button></> : <><button className="button button-quiet" onClick={() => { setEditingItem(item.id); setEditingAmount(rupeesFromPaise(Number(item.planned_paise))); setEditingDue(item.due_day ? String(item.due_day) : ""); const source = item.funding_account_id || data.recurringTemplates.find(template => template.id === item.recurring_template_id)?.source_account_id; setEditingFundingAccount(cashFundingAccounts.some(funding => funding.id === source) ? source || "" : ""); }}>Edit</button><button className="button button-quiet" onClick={() => { if (window.confirm(`Remove planned item “${item.name}”? Actual transactions stay.`)) void run(() => deleteRow(client, "plan_items", item.id)).catch(() => {}); }}>Remove</button></>}</td></tr>;
         })}</tbody></table></div> : <Empty text="This plan is empty. Add expected income, expenses, and savings below." />}
       </Section>
       <Section title="Add a planned item"><form className="form-stack" onSubmit={addItem}><div className="form-grid">
         <label className="field">Name<input className="input" required placeholder="e.g. Rent" value={name} onChange={event => setName(event.target.value)} /></label>
-        <label className="field">Type<select className="select" value={kind} onChange={event => { setKind(event.target.value as PlanItem["kind"]); setCategory(""); setGoal(""); setAccount(""); setRecurringTemplate(""); }}>{planKinds.map(value => <option key={value} value={value}>{planLabels[value]}</option>)}</select></label>
+        <label className="field">Type<select className="select" value={kind} onChange={event => { setKind(event.target.value as PlanItem["kind"]); setCategory(""); setGoal(""); setAccount(""); setFundingAccount(""); setRecurringTemplate(""); }}>{planKinds.map(value => <option key={value} value={value}>{planLabels[value]}</option>)}</select></label>
         {amountInput(amount, setAmount, "Planned amount (₹)")}
         <label className="field">Due day (optional)<input className="input" type="number" min="1" max="31" value={dueDay} onChange={event => setDueDay(event.target.value)} /></label>
-        {matchingTemplates.length > 0 && <label className="field">Linked recurring item (optional)<select className="select" value={recurringTemplate} onChange={event => { const id = event.target.value; setRecurringTemplate(id); const template = matchingTemplates.find(item => item.id === id); if (template) { setName(template.name); setAmount(rupeesFromPaise(Number(template.amount_paise))); setDueDay(String(template.due_day)); setCategory(template.category_id || ""); setAccount(template.destination_account_id || ""); } }}><option value="">No linked recurring item</option>{matchingTemplates.map(template => <option key={template.id} value={template.id}>{template.name} · day {template.due_day}</option>)}</select></label>}
+        {matchingTemplates.length > 0 && <label className="field">Linked recurring item (optional)<select className="select" value={recurringTemplate} onChange={event => { const id = event.target.value; setRecurringTemplate(id); const template = matchingTemplates.find(item => item.id === id); if (template) { setName(template.name); setAmount(rupeesFromPaise(Number(template.amount_paise))); setDueDay(String(template.due_day)); setCategory(template.category_id || ""); setAccount(template.destination_account_id || ""); setFundingAccount(cashFundingAccounts.some(funding => funding.id === template.source_account_id) ? template.source_account_id || "" : ""); } }}><option value="">No linked recurring item</option>{matchingTemplates.map(template => <option key={template.id} value={template.id}>{template.name} · day {template.due_day}</option>)}</select></label>}
         {(kind === "income" || kind === "fixed_expense" || kind === "variable_expense") && <label className="field">Category<select className="select" required value={category} onChange={event => setCategory(event.target.value)}><option value="">Choose category</option>{data.categories.filter(item => item.kind === (kind === "income" ? "income" : "expense")).map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>}
         {kind === "saving" && <label className="field">Goal<select className="select" required value={goal} onChange={event => setGoal(event.target.value)}><option value="">Choose goal</option>{data.goals.filter(item => item.status === "active").map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>}
         {kind === "investment" && accountSelect(data.accounts.filter(item => item.kind === "investment"), account, setAccount, "Investment holding")}
+        {kind !== "income" && <label className="field">Funding bank or cash account<select className="select" value={fundingAccount} onChange={event => setFundingAccount(event.target.value)}><option value="">Choose funding account</option>{cashFundingAccounts.map(funding => <option key={funding.id} value={funding.id}>{funding.name}</option>)}</select></label>}
       </div>{localError && <p className="form-error" role="alert">{localError}</p>}<button className="button button-primary">Add to plan</button></form></Section>
     </>}
   </div>;

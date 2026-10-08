@@ -125,6 +125,7 @@ export interface PlanItem {
   category_id: string | null;
   goal_id: string | null;
   account_id: string | null;
+  funding_account_id?: string | null;
   recurring_template_id: string | null;
   version?: number;
 }

@@ -1,4 +1,5 @@
-import { AlertCard, GoalCard, LineChart, StatCard, formatMoney } from "@/components";
+import { AlertCard, GoalCard, LineChart, StackedFlowChart, StatCard, formatMoney } from "@/components";
+import { dashboardLiquidity, dashboardMonthlyFlows } from "@/lib/dashboard";
 import {
   balancesOn,
   effectiveTransactions,
@@ -182,7 +183,9 @@ export function DashboardView({ data, onDismissAlert, onSnoozeAlert }: Dashboard
 
   const today = todayInIndia();
   const month = monthStart(today);
-  const totals = totalsOn(data, today);
+  const liquidity = dashboardLiquidity(data, today);
+  const balances = balancesOn(data, today);
+  const flows = dashboardMonthlyFlows(data, today);
   const actual = monthlyActivity(data, month);
   const plan = data.monthlyPlans.find((item) => item.month_start === month && item.status === "active")
     ?? data.monthlyPlans.find((item) => item.month_start === month);
@@ -195,22 +198,47 @@ export function DashboardView({ data, onDismissAlert, onSnoozeAlert }: Dashboard
   const activeAlerts = filterActiveAlerts(buildAlerts(data, today), data.alertStates, new Date().toISOString());
 
   return <>
-    <div className="stat-grid">
-      <StatCard label="Total assets" valuePaise={totals.assets} detail="Cash, bank and investments" tone="accent" icon="↗" />
-      <StatCard label="Net worth" valuePaise={totals.netWorth} detail={`After ${formatMoney(totals.debts)} of debt`} icon="◎" />
-      <StatCard label="Cash and bank" valuePaise={totals.cash} detail="Across cash and bank accounts" icon="▤" />
-      <StatCard label="Investments" valuePaise={totals.investments} detail="Latest recorded values" tone="warm" icon="◒" />
-    </div>
-
-    {activeAlerts.length > 0 && <section style={sectionStyle}>
-      <div className="section-heading"><div><h2>Needs your attention</h2><p>Upcoming bills, budgets and backup reminders</p></div><a href="/alerts">View all {activeAlerts.length} alerts →</a></div>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 280px), 1fr))", gap: 12 }}>
+    <section>
+      <div className="section-heading"><div><h2>Alerts</h2><p>Upcoming bills, budgets and backup reminders</p></div><a href="/alerts">View all {activeAlerts.length} alerts →</a></div>
+      {activeAlerts.length > 0 ? <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 280px), 1fr))", gap: 12 }}>
         {activeAlerts.slice(0, 3).map((alert) => <AlertCard key={alert.key} title={alert.title} description={alert.description} severity={alert.severity} actionLabel="Open" onAction={() => { window.location.href = alert.href; }} onDismiss={onDismissAlert ? () => void onDismissAlert(alert.key).catch(() => {}) : undefined} onSnooze={onSnoozeAlert ? () => void onSnoozeAlert(alert.key).catch(() => {}) : undefined} />)}
-      </div>
+      </div> : <div className="surface-card dashboard-clear">All clear for now. New alerts will appear here.</div>}
       {activeAlerts.length > 3 && <p className="muted" style={{ margin: "10px 0 0", fontSize: ".76rem" }}>And {activeAlerts.length - 3} more in Alerts.</p>}
-    </section>}
+    </section>
 
-    <section style={sectionStyle}>{moneyChart(data, "Your money over time")}</section>
+    <section style={sectionStyle}><StackedFlowChart flows={flows} /></section>
+
+    <section style={sectionStyle}>
+      <div className="section-heading"><div><h2>Usable cash</h2><p>Bank and physical cash left after goal allocations and unprocessed commitments</p></div><a href="/plan">Manage monthly plan →</a></div>
+      <div className="surface-card dashboard-liquidity">
+        <div><span className="dashboard-kicker">Available to use</span><strong className={liquidity.usablePaise < 0 ? "dashboard-negative" : ""}>{formatMoney(liquidity.usablePaise)}</strong><small>As of {dayLabel(today)} · not a bank balance</small></div>
+        <div className="dashboard-liquidity-breakdown"><span>Bank + cash <strong>{formatMoney(liquidity.locations.reduce((sum, location) => sum + location.balancePaise, 0))}</strong></span><span>Reserved for goals <strong>−{formatMoney(liquidity.goalReservedPaise)}</strong></span><span>Remaining monthly commitments <strong>−{formatMoney(liquidity.plannedReservedPaise)}</strong></span></div>
+      </div>
+      {liquidity.unassignedCount > 0 && <p className="notice-banner dashboard-notice">{liquidity.unassignedCount} commitment{liquidity.unassignedCount === 1 ? "" : "s"} totaling {formatMoney(liquidity.unassignedPaise)} ha{liquidity.unassignedCount === 1 ? "s" : "ve"} no funding bank or cash account. The total above deducts it, but account-level usable amounts do not. Assign funding on the Monthly Plan page.</p>}
+      {liquidity.possibleOverlapCount > 0 && <p className="notice-banner dashboard-notice">{liquidity.possibleOverlapCount} recurring item{liquidity.possibleOverlapCount === 1 ? " may" : "s may"} overlap an unlinked plan line. Link them on the Monthly Plan page to avoid reserving twice.</p>}
+      {liquidity.usablePaise < 0 && <p className="notice-banner dashboard-notice">Your goals and remaining commitments exceed current bank and cash balances. Review the allocations and plan before spending.</p>}
+    </section>
+
+    <section style={sectionStyle}>
+      <div className="section-heading"><div><h2>Where your money is</h2><p>Each account or investment, with its current location and purpose</p></div><a href="/accounts">Manage accounts →</a></div>
+      <div className="dashboard-account-grid">{data.accounts.map(account => {
+        const location = liquidity.locations.find(item => item.account.id === account.id);
+        const balance = balances.get(account.id) ?? 0;
+        const investmentPurposes = account.kind === "investment" ? data.goalAllocations.filter(item => item.account_id === account.id).map(item => ({ label: data.goals.find(goal => goal.id === item.goal_id)?.name || "Goal", amountPaise: goalAllocationValue(item, account, balance) })) : [];
+        const purposes = location?.purposes.map(item => ({ label: item.label, amountPaise: item.amountPaise })) || investmentPurposes;
+        const assigned = purposes.reduce((sum, item) => sum + item.amountPaise, 0);
+        return <div className="surface-card dashboard-account" key={account.id}><div className="dashboard-account-top"><span className="pill">{account.kind === "card" || account.kind === "loan" ? "Liability" : account.kind === "investment" ? "Investment" : account.kind === "cash" ? "Physical cash" : "Bank"}</span>{!account.active && <span className="muted">Archived</span>}</div><h3>{account.name}</h3><strong className="dashboard-account-balance">{formatMoney(balance)}</strong><small className="muted">{account.kind === "card" || account.kind === "loan" ? "Outstanding balance · not usable cash" : account.kind === "investment" ? "Latest recorded value · not usable cash" : "Recorded balance"}</small>
+          {location ? <div className="dashboard-account-facts"><span>Goal reserved <strong>{formatMoney(location.goalReservedPaise)}</strong></span><span>Plans & recurring <strong>{formatMoney(location.plannedReservedPaise)}</strong></span><span>Usable here <strong className={location.usablePaise < 0 ? "dashboard-negative" : ""}>{formatMoney(location.usablePaise)}</strong></span></div> : null}
+          {account.kind === "investment" && <div className="dashboard-account-facts"><span>Goal assigned <strong>{formatMoney(assigned)}</strong></span><span>Unassigned <strong>{formatMoney(balance - assigned)}</strong></span></div>}
+          {(purposes.length > 0 || location) && <div className="dashboard-purpose-list"><span>Purpose</span>{purposes.map((purpose, index) => <div key={`${purpose.label}-${index}`}><span>{purpose.label}</span><strong>{formatMoney(purpose.amountPaise)}</strong></div>)}{location && <div><span>Unused here</span><strong className={location.usablePaise < 0 ? "dashboard-negative" : ""}>{formatMoney(location.usablePaise)}</strong></div>}</div>}
+        </div>;
+      })}</div>
+    </section>
+
+    <section style={sectionStyle}>
+      <div className="section-heading"><div><h2>Recent activity</h2><p>Your latest recorded money movements</p></div><a href="/transactions">All transactions →</a></div>
+      {recent.length ? <div className="surface-card table-wrap"><table className="data-table"><thead><tr><th>Date</th><th>Activity</th><th>Type</th><th style={{ textAlign: "right" }}>Amount</th></tr></thead><tbody>{recent.map((transaction) => <tr key={transaction.id}><td>{dayLabel(transaction.occurred_on)}</td><td><strong>{transactionName(transaction, data)}</strong></td><td>{transaction.kind.replaceAll("_", " ")}</td><td style={{ textAlign: "right" }}><strong>{transactionAmount(transaction)}</strong></td></tr>)}</tbody></table></div> : <div className="empty-state"><h3>No transactions yet</h3><p>Record income, spending or transfers to see recent activity here.</p><a className="button button-secondary" href="/transactions">Add a transaction</a></div>}
+    </section>
 
     <section style={sectionStyle}>
       <div className="section-heading"><div><h2>{monthLabel(month)} plan</h2><p>Your intentions alongside recorded activity</p></div><a href="/plan">Open plan →</a></div>
@@ -231,10 +259,6 @@ export function DashboardView({ data, onDismissAlert, onSnoozeAlert }: Dashboard
       <GoalList data={data} />
     </section>
 
-    <section style={sectionStyle}>
-      <div className="section-heading"><div><h2>Recent activity</h2><p>Your latest recorded money movements</p></div><a href="/transactions">All transactions →</a></div>
-      {recent.length ? <div className="surface-card table-wrap"><table className="data-table"><thead><tr><th>Date</th><th>Activity</th><th>Type</th><th style={{ textAlign: "right" }}>Amount</th></tr></thead><tbody>{recent.map((transaction) => <tr key={transaction.id}><td>{dayLabel(transaction.occurred_on)}</td><td><strong>{transactionName(transaction, data)}</strong></td><td>{transaction.kind.replaceAll("_", " ")}</td><td style={{ textAlign: "right" }}><strong>{transactionAmount(transaction)}</strong></td></tr>)}</tbody></table></div> : <div className="empty-state"><h3>No transactions yet</h3><p>Record income, spending or transfers to see recent activity here.</p><a className="button button-secondary" href="/transactions">Add a transaction</a></div>}
-    </section>
   </>;
 }
 
