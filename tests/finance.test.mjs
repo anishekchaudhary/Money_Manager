@@ -11,6 +11,7 @@ import {
   monthStartFromInput,
   nextMonth,
   paiseFromRupees,
+  projectedGoalDate,
   rupeesFromPaise,
   todayInIndia,
   totalsOn,
@@ -44,6 +45,12 @@ function entry(id, transactionId, accountId, delta) {
     account_id: accountId, delta_paise: delta,
   };
 }
+
+test("goals without a target or monthly saving have no completion estimate", () => {
+  const goal = { target_paise: null, monthly_contribution_paise: null };
+  assert.equal(projectedGoalDate(goal, 10_000, "2026-10-08"), null);
+  assert.equal(projectedGoalDate({ ...goal, target_paise: 100_000 }, 10_000, "2026-10-08"), null);
+});
 
 test("cash transfer changes locations but preserves assets and net worth", () => {
   const data = dataWith({

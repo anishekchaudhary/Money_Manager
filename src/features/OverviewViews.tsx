@@ -88,9 +88,9 @@ function GoalList({ data }: OverviewProps) {
     return <GoalCard
       key={goal.id}
       name={goal.name}
-      targetPaise={Number(goal.target_paise)}
+      targetPaise={goal.target_paise === null ? null : Number(goal.target_paise)}
       fundedPaise={fundedPaise}
-      monthlySavingPaise={Number(goal.monthly_contribution_paise)}
+      monthlySavingPaise={goal.monthly_contribution_paise === null ? null : Number(goal.monthly_contribution_paise)}
       estimatedCompletion={goal.status === "completed" ? "Completed" : projectedGoalDate(goal, fundedPaise)}
       allocations={allocations}
       status={goal.status === "completed" ? "completed" : goal.status === "paused" ? "paused" : "active"}

@@ -119,6 +119,7 @@ export function increasedCashReservation(currentPaise: number, increasePaise: nu
 }
 
 export function projectedGoalDate(goal: Goal, funded: number, today = todayInIndia()): string | null {
+  if (goal.target_paise === null) return null;
   if (funded >= Number(goal.target_paise)) return "Target reached";
   if (!goal.monthly_contribution_paise || goal.monthly_contribution_paise <= 0) return null;
   const months = Math.ceil((Number(goal.target_paise) - funded) / Number(goal.monthly_contribution_paise));

@@ -575,9 +575,10 @@ export function GoalsView() {
   const [name, setName] = useState("");
   const [target, setTarget] = useState("");
   const [targetOn, setTargetOn] = useState("");
-  const [monthly, setMonthly] = useState("0");
+  const [monthly, setMonthly] = useState("");
   const [quickAccount, setQuickAccount] = useState("");
   const [quickAmount, setQuickAmount] = useState("");
+  const [excludedQuickGoals, setExcludedQuickGoals] = useState<string[]>([]);
   const [allocationGoal, setAllocationGoal] = useState("");
   const [allocationAccount, setAllocationAccount] = useState("");
   const [allocationMode, setAllocationMode] = useState<"total" | "increase">("total");
@@ -590,6 +591,7 @@ export function GoalsView() {
   const [localError, setLocalError] = useState("");
   const balances = useMemo(() => balancesOn(data), [data]);
   const activeGoals = data.goals.filter(goal => goal.status === "active");
+  const selectedQuickGoals = activeGoals.filter(goal => !excludedQuickGoals.includes(goal.id));
   const cashAccounts = data.accounts.filter(account => account.active && (account.kind === "bank" || account.kind === "cash"));
   const selectedAllocationAccount = data.accounts.find(account => account.id === allocationAccount);
   const selectedAllocation = data.goalAllocations.find(item => item.goal_id === allocationGoal && item.account_id === allocationAccount);
@@ -604,17 +606,21 @@ export function GoalsView() {
     event.preventDefault(); setLocalError("");
     try {
       await run(() => insertRow(client, "goals", ownerId, {
-        id: crypto.randomUUID(), name: name.trim(), target_paise: paiseFromRupees(target),
-        target_on: targetOn || null, monthly_contribution_paise: paiseFromRupees(monthly),
+        id: crypto.randomUUID(), name: name.trim(), target_paise: target ? paiseFromRupees(target) : null,
+        target_on: targetOn || null, monthly_contribution_paise: monthly ? paiseFromRupees(monthly) : null,
         status: "active", notes: null,
       }));
-      setName(""); setTarget(""); setTargetOn(""); setMonthly("0");
+      setName(""); setTarget(""); setTargetOn(""); setMonthly("");
     } catch (error) { setLocalError(errorText(error)); }
   }
 
   async function doQuickSave(event: FormEvent) {
     event.preventDefault(); setLocalError("");
-    try { await run(() => quickSave(client, quickAccount, paiseFromRupees(quickAmount))); setQuickAmount(""); }
+    try {
+      if (!selectedQuickGoals.length) throw new Error("Select at least one active goal for Quick Save.");
+      await run(() => quickSave(client, quickAccount, paiseFromRupees(quickAmount), selectedQuickGoals.map(goal => goal.id)));
+      setQuickAmount("");
+    }
     catch (error) { setLocalError(errorText(error)); }
   }
 
@@ -632,8 +638,14 @@ export function GoalsView() {
         change.cash_amount_paise = increasedCashReservation(currentReservation, increase, availableCash(selectedAllocationAccount, data, balances));
       } else change.cash_amount_paise = paiseFromRupees(allocationValue);
       await run(() => setGoalAllocations(client, [change]));
-      setAllocationValue("");
+      setAllocationGoal(""); setAllocationAccount(""); setAllocationValue("");
     } catch (error) { setLocalError(errorText(error)); }
+  }
+
+  function toggleAllocation(goalId: string) {
+    setLocalError("");
+    setAllocationGoal(current => current === goalId ? "" : goalId);
+    setAllocationAccount(""); setAllocationMode("total"); setAllocationValue("");
   }
 
   function openCompletion(goal: Goal) {
@@ -717,36 +729,43 @@ export function GoalsView() {
   }
 
   return <div className="page-stack">
+    <Section title="Quick Save" description="Choose an account and amount, then choose which active goals receive an equal share. All are selected by default."><form className="form-stack" onSubmit={doQuickSave}>
+      {accountSelect(cashAccounts, quickAccount, setQuickAccount, "Save from")}
+      {quickAccount && <p className="muted">Available in this account: {formatMoney(availableCash(cashAccounts.find(item => item.id === quickAccount)!, data, balances))}</p>}
+      {amountInput(quickAmount, setQuickAmount)}
+      <fieldset className="goal-checklist"><legend>Goals to save toward</legend>
+        {activeGoals.length ? activeGoals.map(goal => <label className="goal-check-option" key={goal.id}><input type="checkbox" checked={!excludedQuickGoals.includes(goal.id)} onChange={event => setExcludedQuickGoals(current => event.target.checked ? current.filter(id => id !== goal.id) : [...current, goal.id])} /><span>{goal.name}</span></label>) : <p className="muted">Create a goal to use Quick Save.</p>}
+      </fieldset>
+      <p className="muted">{selectedQuickGoals.length} of {activeGoals.length} active goal{activeGoals.length === 1 ? "" : "s"} selected.</p>
+      <button className="button button-primary" disabled={!selectedQuickGoals.length}>Split across selected goals</button>
+    </form></Section>
+    <h2 className="goal-list-heading">All goals</h2>
     <div className="goal-grid">{data.goals.length ? data.goals.map(goal => {
       const funded = fundedForGoal(goal, data, balances);
       const allocations = data.goalAllocations.filter(item => item.goal_id === goal.id).map(item => ({ source: data.accounts.find(account => account.id === item.account_id)?.name || "Account", amountPaise: goalAllocationValue(item, data.accounts.find(account => account.id === item.account_id), balances.get(item.account_id) || 0) }));
       const completion = data.goalCompletions.find(item => item.goal_id === goal.id);
       if (completion) for (const payment of data.goalCompletionPayments.filter(item => item.completion_id === completion.id)) { const transaction = data.transactions.find(item => item.id === payment.transaction_id); if (transaction) allocations.push({ source: `${data.accounts.find(account => account.id === transaction.source_account_id)?.name || "Account"} · ${payment.payment_method}`, amountPaise: Number(transaction.amount_paise) }); }
-      return <div key={goal.id} className="goal-action-wrap"><GoalCard name={goal.name} targetPaise={Number(goal.target_paise)} fundedPaise={funded} monthlySavingPaise={Number(goal.monthly_contribution_paise)} estimatedCompletion={goal.status === "completed" ? undefined : projectedGoalDate(goal, funded) || undefined} allocations={allocations} status={goal.status === "completed" ? "completed" : goal.status === "paused" ? "paused" : "active"} completedSpentPaise={completion ? Number(completion.total_spent_paise) : undefined} completedOn={goal.completed_at} /><div className="goal-card-actions">{(goal.status === "active" || goal.status === "paused") && <button className="button button-secondary" onClick={() => openCompletion(goal)}>Complete and record spending</button>}{goal.status === "active" && <button className="button button-quiet" onClick={() => void run(() => updateRow(client, "goals", goal.id, { status: "paused" }, goal.version)).catch(() => {})}>Pause</button>}{goal.status === "paused" && <button className="button button-quiet" onClick={() => void run(() => updateRow(client, "goals", goal.id, { status: "active" }, goal.version)).catch(() => {})}>Resume</button>}</div></div>;
+      return <GoalCard key={goal.id} name={goal.name} targetPaise={goal.target_paise === null ? null : Number(goal.target_paise)} fundedPaise={funded} monthlySavingPaise={goal.monthly_contribution_paise === null ? null : Number(goal.monthly_contribution_paise)} estimatedCompletion={goal.status === "completed" ? undefined : projectedGoalDate(goal, funded) || undefined} allocations={allocations} status={goal.status === "completed" ? "completed" : goal.status === "paused" ? "paused" : "active"} completedSpentPaise={completion ? Number(completion.total_spent_paise) : undefined} completedOn={goal.completed_at}>
+        {(goal.status === "active" || goal.status === "paused") && <><div className="goal-card-actions"><button type="button" className="button button-secondary" aria-expanded={allocationGoal === goal.id} onClick={() => toggleAllocation(goal.id)}>{allocationGoal === goal.id ? "Close assignment" : "Assign money"}</button><button type="button" className="button button-secondary" onClick={() => openCompletion(goal)}>Complete and record spending</button>{goal.status === "active" ? <button type="button" className="button button-quiet" onClick={() => void run(() => updateRow(client, "goals", goal.id, { status: "paused" }, goal.version)).catch(() => {})}>Pause</button> : <button type="button" className="button button-quiet" onClick={() => void run(() => updateRow(client, "goals", goal.id, { status: "active" }, goal.version)).catch(() => {})}>Resume</button>}</div>
+          {allocationGoal === goal.id && <form className="form-stack goal-inline-form" onSubmit={saveAllocation} aria-label={`Assign money to ${goal.name}`}>
+            <p className="muted">Reserve money for this goal without changing the account balance.</p>
+            {accountSelect(data.accounts.filter(item => ["cash", "bank", "investment"].includes(item.kind)), allocationAccount, value => { setAllocationAccount(value); const investment = data.accounts.find(item => item.id === value)?.kind === "investment"; if (investment) setAllocationMode("total"); setAllocationValue(investment || allocationMode === "total" ? existingAllocationValue(goal.id, value) : ""); }, "Linked account or holding")}
+            {selectedAllocationAccount?.kind !== "investment" && <label className="field">Change reservation<select className="select" value={allocationMode} onChange={event => { const mode = event.target.value as "total" | "increase"; setAllocationMode(mode); setAllocationValue(mode === "total" ? existingAllocationValue(goal.id, allocationAccount) : ""); }}><option value="total">Set total reserved amount</option><option value="increase">Increase by an amount</option></select></label>}
+            {amountInput(allocationValue, setAllocationValue, selectedAllocationAccount?.kind === "investment" ? "Share of holding (%)" : allocationMode === "increase" ? "Add to this goal (₹)" : "Total reserved in this account (₹)")}
+            {selectedAllocationAccount?.kind === "investment" ? <p className="muted">Investment reservations use a percentage of the holding.</p> : allocationMode === "increase" ? <p className="muted">Currently reserved here: {formatMoney(currentReservation)}. Available to add: {selectedAllocationAccount ? formatMoney(availableCash(selectedAllocationAccount, data, balances)) : "choose an account"}.</p> : <p className="muted">Enter the new total, or 0 to remove this reservation.</p>}
+            {localError && <p className="form-error" role="alert">{localError}</p>}
+            <button className="button button-primary">Update allocation</button>
+          </form>}</>}
+      </GoalCard>;
     }) : <Empty text="Add a goal to see what you are saving for and where its money is held." />}</div>
-    <div className="two-column-grid">
-      <Section title="Quick Save" description="Choose an account and amount. We reserve it equally across all active goals, even if a goal exceeds its target."><form className="form-stack" onSubmit={doQuickSave}>
-        {accountSelect(cashAccounts, quickAccount, setQuickAccount, "Save from")}
-        {quickAccount && <p className="muted">Available in this account: {formatMoney(availableCash(cashAccounts.find(item => item.id === quickAccount)!, data, balances))}</p>}
-        {amountInput(quickAmount, setQuickAmount)}
-        <p className="muted">{activeGoals.length} active goal{activeGoals.length === 1 ? "" : "s"} will receive an equal share.</p>
-        <button className="button button-primary" disabled={!activeGoals.length}>Split across goals</button>
-      </form></Section>
-      <Section title="Create a goal"><form className="form-stack" onSubmit={addGoal}>
+    <Section title="Create a goal"><form className="form-stack" onSubmit={addGoal}>
         <label className="field">Goal name<input className="input" required value={name} onChange={event => setName(event.target.value)} placeholder="e.g. Emergency Fund" /></label>
-        {amountInput(target, setTarget, "Target (₹)")}
-        {amountInput(monthly, setMonthly, "Planned monthly saving (₹)")}
+        <label className="field">Target (₹, optional)<input className="input" type="number" min="0.01" step="0.01" value={target} onChange={event => setTarget(event.target.value)} /></label>
+        <label className="field">Planned monthly saving (₹, optional)<input className="input" type="number" min="0" step="0.01" value={monthly} onChange={event => setMonthly(event.target.value)} /></label>
         <label className="field">Target date (optional)<input className="input" type="date" value={targetOn} onChange={event => setTargetOn(event.target.value)} /></label>
         <button className="button button-secondary">Create goal</button>
       </form></Section>
-    </div>
-    <Section title="Assign money to one goal" description="This changes a reservation, not an account balance. Investment shares change value with the holding."><form className="form-stack" onSubmit={saveAllocation}><div className="form-grid">
-      <label className="field">Goal<select className="select" required value={allocationGoal} onChange={event => { const value = event.target.value; setAllocationGoal(value); setAllocationValue(allocationMode === "total" ? existingAllocationValue(value, allocationAccount) : ""); }}><option value="">Choose goal</option>{data.goals.filter(item => item.status === "active" || item.status === "paused").map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
-      {accountSelect(data.accounts.filter(item => ["cash", "bank", "investment"].includes(item.kind)), allocationAccount, value => { setAllocationAccount(value); const investment = data.accounts.find(item => item.id === value)?.kind === "investment"; if (investment) setAllocationMode("total"); setAllocationValue(investment || allocationMode === "total" ? existingAllocationValue(allocationGoal, value) : ""); }, "Linked account or holding")}
-      {selectedAllocationAccount?.kind !== "investment" && <label className="field">Change reservation<select className="select" value={allocationMode} onChange={event => { const mode = event.target.value as "total" | "increase"; setAllocationMode(mode); setAllocationValue(mode === "total" ? existingAllocationValue(allocationGoal, allocationAccount) : ""); }}><option value="total">Set total reserved amount</option><option value="increase">Increase by an amount</option></select></label>}
-      {amountInput(allocationValue, setAllocationValue, selectedAllocationAccount?.kind === "investment" ? "Share of holding (%)" : allocationMode === "increase" ? "Add to this goal (₹)" : "Total reserved in this account (₹)")}
-    </div>{selectedAllocationAccount?.kind === "investment" ? <p className="muted">Investment reservations use a percentage of the holding, so they cannot be increased by an exact rupee amount here.</p> : allocationMode === "increase" ? <p className="muted">Currently reserved for this goal here: {formatMoney(currentReservation)}. Available to add: {selectedAllocationAccount ? formatMoney(availableCash(selectedAllocationAccount, data, balances)) : "choose an account"}. The amount entered will be added to the current reservation.</p> : <p className="muted">Enter the new total for this goal and source. Enter 0 to remove a reservation.</p>}<button className="button button-secondary">Update allocation</button></form></Section>
-    {localError && <p className="form-error" role="alert">{localError}</p>}
+    {localError && !allocationGoal && !completing && <p className="form-error" role="alert">{localError}</p>}
     {completing && <div className="modal-backdrop" role="presentation"><section className="modal-panel surface-card" role="dialog" aria-modal="true" aria-labelledby="complete-title"><div className="section-heading"><div><p className="app-eyebrow">GOAL COMPLETION</p><h2 id="complete-title">Complete {completing.name}</h2><p>Choose exactly where the spending comes from. The app will not take money from other goals without your choice.</p></div><button className="button button-quiet" onClick={() => setCompleting(null)} aria-label="Close">✕</button></div>
       <form className="form-stack" onSubmit={finishGoal}>
         {payments.map((payment, index) => <div className="payment-row" key={payment.key}><h3>Payment {index + 1}</h3><div className="form-grid">

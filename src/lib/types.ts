@@ -72,9 +72,9 @@ export interface Goal {
   id: string;
   owner_id: string;
   name: string;
-  target_paise: number;
+  target_paise: number | null;
   target_on: string | null;
-  monthly_contribution_paise: number;
+  monthly_contribution_paise: number | null;
   status: "active" | "paused" | "completed" | "archived";
   completed_at: string | null;
   notes: string | null;

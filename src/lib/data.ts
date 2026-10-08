@@ -122,10 +122,11 @@ export async function postTransaction(client: SupabaseClient, input: PostTransac
   return String(data || id);
 }
 
-export async function quickSave(client: SupabaseClient, accountId: string, amountPaise: number): Promise<unknown> {
+export async function quickSave(client: SupabaseClient, accountId: string, amountPaise: number, goalIds: string[]): Promise<unknown> {
   const { data, error } = await client.rpc("quick_save", {
     p_account_id: accountId,
     p_amount_paise: amountPaise,
+    p_goal_ids: goalIds,
   });
   assertNoError(error, "Quick Save");
   return data;
