@@ -208,8 +208,9 @@ export function TransactionsView() {
     .sort((a, b) => b.occurred_on.localeCompare(a.occurred_on) || (b.created_at || "").localeCompare(a.created_at || ""));
   return <div className="page-stack">
     {pending.length > 0 && <div className="notice-banner"><strong>{pending.length} transaction{pending.length === 1 ? "" : "s"} waiting to sync.</strong> {pending.some(item => item.error) ? "Open the pending list below to review errors." : "They will upload when the connection returns."}</div>}
+    <div className="section-actions" style={{ justifyContent: "flex-end" }}><button className="button button-primary" onClick={() => { setShowForm(value => !value); setEditing(null); }}>{showForm ? "Close" : "+ Add transaction"}</button></div>
     <Section title="Transaction history" description="Transfers and card repayments do not count as new spending.">
-      <div className="section-actions"><input className="input" aria-label="Search transactions" placeholder="Search transactions" value={query} onChange={e => setQuery(e.target.value)} /><button className="button button-primary" onClick={() => { setShowForm(value => !value); setEditing(null); }}>{showForm ? "Close" : "+ Add transaction"}</button></div>
+      <div className="section-actions"><input className="input" aria-label="Search transactions" placeholder="Search transactions" value={query} onChange={e => setQuery(e.target.value)} /></div>
       {showForm && <form className="form-stack inline-form" onSubmit={submit}>
         {editing && <div className="notice-banner" role="status">Correcting the selected transaction. Saving will keep the original and add a reversal plus your corrected entry.</div>}
         <div className="form-grid">
