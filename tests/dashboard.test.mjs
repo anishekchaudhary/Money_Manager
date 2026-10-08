@@ -91,3 +91,42 @@ test("saving allocation from a different account does not release the funded pla
   assert.equal(actualForPlanItem(item, data, month), 0);
   assert.equal(dashboardLiquidity(data, "2026-10-08").plannedReservedPaise, 10_000);
 });
+
+test("outstanding card debt is deducted once even with a pending card bill", () => {
+  const data = dataWith({
+    accounts: [account("bank", "bank", 100_000), account("card", "card", 20_000)],
+    recurringTemplates: [{ id: "card-bill", name: "Card bill", kind: "card_payment", source_account_id: "bank", destination_account_id: "card" }],
+    recurringOccurrences: [{ id: "card-due", template_id: "card-bill", month_start: month, expected_amount_paise: 20_000, status: "pending" }],
+  });
+  const before = dashboardLiquidity(data, "2026-10-08");
+  assert.equal(before.cardDebtPaise, 20_000);
+  assert.equal(before.plannedReservedPaise, 0);
+  assert.equal(before.usablePaise, 80_000);
+
+  data.transactions.push(transaction("card-paid", "card_payment", 20_000, { source_account_id: "bank", destination_account_id: "card" }));
+  data.entries.push(entry("cash-out", "card-paid", "bank", -20_000), entry("debt-down", "card-paid", "card", -20_000));
+  data.recurringOccurrences[0].status = "completed";
+  data.recurringOccurrences[0].actual_transaction_id = "card-paid";
+  const after = dashboardLiquidity(data, "2026-10-08");
+  assert.equal(after.cardDebtPaise, 0);
+  assert.equal(after.usablePaise, 80_000);
+});
+
+test("current unpaid EMI is reserved, then released when marked paid", () => {
+  const data = dataWith({
+    accounts: [account("bank", "bank", 100_000), account("loan", "loan", 200_000)],
+    recurringTemplates: [{ id: "emi", name: "Home EMI", kind: "loan_payment", source_account_id: "bank", destination_account_id: "loan" }],
+    recurringOccurrences: [{ id: "emi-due", template_id: "emi", month_start: month, expected_amount_paise: 10_000, status: "pending" }],
+  });
+  const before = dashboardLiquidity(data, "2026-10-08");
+  assert.equal(before.emiReservedPaise, 10_000);
+  assert.equal(before.usablePaise, 90_000);
+
+  data.transactions.push(transaction("emi-paid", "loan_payment", 10_000, { source_account_id: "bank", destination_account_id: "loan" }));
+  data.entries.push(entry("emi-cash", "emi-paid", "bank", -10_000), entry("emi-loan", "emi-paid", "loan", -10_000));
+  data.recurringOccurrences[0].status = "completed";
+  data.recurringOccurrences[0].actual_transaction_id = "emi-paid";
+  const after = dashboardLiquidity(data, "2026-10-08");
+  assert.equal(after.emiReservedPaise, 0);
+  assert.equal(after.usablePaise, 90_000);
+});

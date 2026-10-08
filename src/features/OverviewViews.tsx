@@ -209,14 +209,15 @@ export function DashboardView({ data, onDismissAlert, onSnoozeAlert }: Dashboard
     <section style={sectionStyle}><StackedFlowChart flows={flows} /></section>
 
     <section style={sectionStyle}>
-      <div className="section-heading"><div><h2>Usable cash</h2><p>Bank and physical cash left after goal allocations and unprocessed commitments</p></div><a href="/plan">Manage monthly plan →</a></div>
+      <div className="section-heading"><div><h2>Usable cash</h2><p>Bank and physical cash left after goals, unpaid commitments and credit-card debt</p></div><a href="/plan">Manage monthly plan →</a></div>
       <div className="surface-card dashboard-liquidity">
         <div><span className="dashboard-kicker">Available to use</span><strong className={liquidity.usablePaise < 0 ? "dashboard-negative" : ""}>{formatMoney(liquidity.usablePaise)}</strong><small>As of {dayLabel(today)} · not a bank balance</small></div>
-        <div className="dashboard-liquidity-breakdown"><span>Bank + cash <strong>{formatMoney(liquidity.locations.reduce((sum, location) => sum + location.balancePaise, 0))}</strong></span><span>Reserved for goals <strong>−{formatMoney(liquidity.goalReservedPaise)}</strong></span><span>Remaining monthly commitments <strong>−{formatMoney(liquidity.plannedReservedPaise)}</strong></span></div>
+        <div className="dashboard-liquidity-breakdown"><span>Bank + cash <strong>{formatMoney(liquidity.locations.reduce((sum, location) => sum + location.balancePaise, 0))}</strong></span><span>Reserved for goals <strong>−{formatMoney(liquidity.goalReservedPaise)}</strong></span><span>Other monthly commitments <strong>−{formatMoney(liquidity.plannedReservedPaise - liquidity.emiReservedPaise)}</strong></span><span>Unpaid EMI <strong>−{formatMoney(liquidity.emiReservedPaise)}</strong></span><span>Outstanding credit cards <strong>−{formatMoney(liquidity.cardDebtPaise)}</strong></span></div>
       </div>
       {liquidity.unassignedCount > 0 && <p className="notice-banner dashboard-notice">{liquidity.unassignedCount} commitment{liquidity.unassignedCount === 1 ? "" : "s"} totaling {formatMoney(liquidity.unassignedPaise)} ha{liquidity.unassignedCount === 1 ? "s" : "ve"} no funding bank or cash account. The total above deducts it, but account-level usable amounts do not. Assign funding on the Monthly Plan page.</p>}
       {liquidity.possibleOverlapCount > 0 && <p className="notice-banner dashboard-notice">{liquidity.possibleOverlapCount} recurring item{liquidity.possibleOverlapCount === 1 ? " may" : "s may"} overlap an unlinked plan line. Link them on the Monthly Plan page to avoid reserving twice.</p>}
-      {liquidity.usablePaise < 0 && <p className="notice-banner dashboard-notice">Your goals and remaining commitments exceed current bank and cash balances. Review the allocations and plan before spending.</p>}
+      {liquidity.cardDebtPaise > 0 && <p className="muted dashboard-global-note">Credit-card debt is deducted from the total above, not assigned to a particular bank or cash account. Scheduled card repayments are not deducted again.</p>}
+      {liquidity.usablePaise < 0 && <p className="notice-banner dashboard-notice">Your goals, unpaid commitments and card debt exceed current bank and cash balances. Review the allocations and plan before spending.</p>}
     </section>
 
     <section style={sectionStyle}>

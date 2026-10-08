@@ -130,6 +130,7 @@ svg { display: block; }
 .dashboard-liquidity-breakdown strong { color: #fff; }
 .dashboard-negative { color: #e19a92 !important; }
 .dashboard-notice { margin-top: 12px; }
+.dashboard-global-note { margin: 10px 2px 0; font-size: .73rem; line-height: 1.45; }
 .dashboard-account-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr)); gap: 15px; }
 .dashboard-account { min-width: 0; padding: 20px; }
 .dashboard-account-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: .72rem; }

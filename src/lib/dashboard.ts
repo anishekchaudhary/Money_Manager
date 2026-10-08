@@ -24,6 +24,8 @@ export interface DashboardLiquidity {
   usablePaise: number;
   goalReservedPaise: number;
   plannedReservedPaise: number;
+  emiReservedPaise: number;
+  cardDebtPaise: number;
   possibleOverlapCount: number;
 }
 
@@ -49,7 +51,10 @@ export function dashboardLiquidity(data: FinanceData, today = todayInIndia()): D
   const locationById = new Map(locations.map(location => [location.account.id, location]));
   let unassignedPaise = 0;
   let unassignedCount = 0;
+  let emiReservedPaise = 0;
   let possibleOverlapCount = 0;
+  const cardDebtPaise = data.accounts.filter(account => account.kind === "card")
+    .reduce((sum, account) => sum + Math.max(0, balances.get(account.id) ?? 0), 0);
 
   function reserve(accountId: string | null | undefined, purpose: PurposeAmount) {
     if (purpose.amountPaise <= 0) return;
@@ -102,17 +107,21 @@ export function dashboardLiquidity(data: FinanceData, today = todayInIndia()): D
     const source = accountById.get(template.source_account_id || "");
     if (!cashAccount(source)) continue;
     if (template.kind === "transfer" && accountById.get(template.destination_account_id || "")?.kind !== "investment") continue;
-    if (!["expense", "investment_contribution", "card_payment", "loan_payment", "transfer"].includes(template.kind)) continue;
+    // Outstanding card debt is deducted once below, including any pending bill.
+    if (!["expense", "investment_contribution", "loan_payment", "transfer"].includes(template.kind)) continue;
     if (occurrence.month_start === month && template.category_id && unlinkedPlanCategories.has(template.category_id)) possibleOverlapCount++;
-    reserve(source.id, { label: template.name, amountPaise: Number(occurrence.expected_amount_paise), kind: "recurring" });
+    const amountPaise = Number(occurrence.expected_amount_paise);
+    reserve(source.id, { label: template.name, amountPaise, kind: "recurring" });
+    if (template.kind === "loan_payment") emiReservedPaise += amountPaise;
   }
 
   for (const location of locations) location.usablePaise = location.balancePaise - location.goalReservedPaise - location.plannedReservedPaise;
   return {
     locations, unassignedPaise, unassignedCount,
-    usablePaise: locations.reduce((sum, location) => sum + location.usablePaise, 0) - unassignedPaise,
+    usablePaise: locations.reduce((sum, location) => sum + location.usablePaise, 0) - unassignedPaise - cardDebtPaise,
     goalReservedPaise: locations.reduce((sum, location) => sum + location.goalReservedPaise, 0),
     plannedReservedPaise: locations.reduce((sum, location) => sum + location.plannedReservedPaise, 0) + unassignedPaise,
+    emiReservedPaise, cardDebtPaise,
     possibleOverlapCount,
   };
 }
