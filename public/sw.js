@@ -1,6 +1,6 @@
 const CACHE_PREFIX = "my-money-shell-";
-const CACHE_NAME = `${CACHE_PREFIX}v2`;
-const APP_ROUTES = new Set(["/", "/transactions", "/accounts", "/plan", "/goals", "/recurring", "/reports", "/alerts", "/settings"]);
+const CACHE_NAME = `${CACHE_PREFIX}v3`;
+const APP_ROUTES = new Set(["/", "/transactions", "/accounts", "/plan", "/goals", "/reports", "/alerts", "/settings"]);
 const APP_ASSETS = ["/manifest.webmanifest", "/icon-192.png", "/icon-512.png", "/apple-touch-icon.png"];
 
 function canonicalRoute(pathname) {

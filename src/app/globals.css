@@ -82,6 +82,9 @@ svg { display: block; }
 .section-heading p { margin: 4px 0 0; color: var(--ink-soft); font-size: .8rem; }
 .section-heading a { color: var(--green); font-size: .8rem; font-weight: 700; }
 .section-heading a:hover { text-decoration: underline; }
+.planning-jump-nav { display: flex; flex-wrap: wrap; gap: 9px; }
+.planning-group { display: grid; gap: 15px; min-width: 0; scroll-margin-top: 22px; }
+.planning-group > h2 { margin: 0; font-size: 1.13rem; letter-spacing: -.025em; }
 .stat-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 15px; }
 .stat-card { position: relative; min-width: 0; min-height: 146px; padding: 21px 22px; overflow: hidden; border: 1px solid var(--line); border-radius: var(--radius); background: #fff; box-shadow: var(--shadow); }
 .stat-card-accent { border-color: var(--green-deep); background: var(--green-deep); color: #fff; }

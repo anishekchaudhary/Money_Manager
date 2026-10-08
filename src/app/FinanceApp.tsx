@@ -10,7 +10,7 @@ import { addPending, flagPending, listPending, loadSnapshot, removePending, save
 import { monthStart, nextMonth, todayInIndia } from "@/lib/finance";
 import { EMPTY_DATA, type FinanceData } from "@/lib/types";
 import { DashboardView, ReportsView } from "@/features/OverviewViews";
-import { AccountsView, AlertsView, GoalsView, MonthlyPlanView, RecurringView, SettingsView, TransactionsView } from "@/features/WorkViews";
+import { AccountsView, AlertsView, GoalsView, PlanningView, SettingsView, TransactionsView } from "@/features/WorkViews";
 
 interface FinanceContextValue {
   client: SupabaseClient;
@@ -68,8 +68,7 @@ const titles: Record<string, [string, string]> = {
   dashboard: ["Your money, clearly", "A calm overview of what you own, owe, plan, and save."],
   transactions: ["Transactions", "Every rupee in and out, with a clear history."],
   accounts: ["Accounts", "Where your money and investments are held."],
-  plan: ["Monthly plan", "Decide where this month's money should go."],
-  recurring: ["Recurring", "Upcoming salary, bills, subscriptions, and SIPs."],
+  plan: ["Planning & recurring", "Plan the month and manage regular income, bills, and investments."],
   goals: ["Savings goals", "See what is reserved, where it lives, and how it grows."],
   reports: ["Reports", "Follow your money over time."],
   alerts: ["Alerts", "Reminders and budget signals you can control."],
@@ -87,8 +86,7 @@ function Content({ section }: { section: string }) {
   switch (section) {
     case "accounts": return <AccountsView />;
     case "transactions": return <TransactionsView />;
-    case "plan": return <MonthlyPlanView />;
-    case "recurring": return <RecurringView />;
+    case "plan": return <PlanningView />;
     case "goals": return <GoalsView />;
     case "reports": return <ReportsView data={finance.data} />;
     case "alerts": return <AlertsView />;

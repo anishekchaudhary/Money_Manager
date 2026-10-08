@@ -90,7 +90,7 @@ export function buildAlerts(data: FinanceData, today: string): AppAlert[] {
       title: days < 0 ? `${name} is ${Math.abs(days)} day${days === -1 ? "" : "s"} overdue` : days === 0 ? `${name} is due today` : `${name} due in ${days} day${days === 1 ? "" : "s"}`,
       description: `Expected amount ${formatMoney(Number(occurrence.expected_amount_paise))}. Open Recurring to record or skip it.`,
       severity: days < 0 ? "critical" : days === 0 ? "warning" : "info",
-      href: "/recurring",
+      href: "/plan#recurring",
       rank: days < 0 ? 0 : days === 0 ? 1 : 4,
     });
   }

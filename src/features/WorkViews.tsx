@@ -238,9 +238,32 @@ export function TransactionsView() {
 const planKinds: PlanItem["kind"][] = ["income", "fixed_expense", "variable_expense", "saving", "investment"];
 const planLabels: Record<PlanItem["kind"], string> = { income: "Expected income", fixed_expense: "Fixed expense", variable_expense: "Category budget", saving: "Goal saving", investment: "Investment contribution" };
 
-export function MonthlyPlanView() {
-  const { data, client, ownerId, run } = useFinance();
+interface PlanningSectionProps {
+  month?: string;
+  onMonthChange?: (month: string) => void;
+}
+
+export function PlanningView() {
   const [month, setMonth] = useState(monthStart(todayInIndia()));
+  useEffect(() => {
+    if (window.location.hash === "#recurring" || new URLSearchParams(window.location.search).get("view") === "recurring") {
+      const frame = window.requestAnimationFrame(() => document.getElementById("recurring")?.scrollIntoView());
+      return () => window.cancelAnimationFrame(frame);
+    }
+  }, []);
+  return <div className="page-stack">
+    <div className="section-actions"><MonthPicker month={month} onChange={setMonth} /><span className="pill">{monthLabel(month)}</span></div>
+    <nav className="planning-jump-nav" aria-label="Planning sections"><a className="button button-secondary button-small" href="#monthly-plan">Monthly plan</a><a className="button button-secondary button-small" href="#recurring">Recurring items</a></nav>
+    <section id="monthly-plan" className="planning-group" aria-labelledby="monthly-plan-heading"><h2 id="monthly-plan-heading">Monthly plan</h2><MonthlyPlanView month={month} onMonthChange={setMonth} /></section>
+    <section id="recurring" className="planning-group" aria-labelledby="recurring-heading"><h2 id="recurring-heading">Recurring items</h2><RecurringView month={month} onMonthChange={setMonth} /></section>
+  </div>;
+}
+
+export function MonthlyPlanView({ month: selectedMonth, onMonthChange }: PlanningSectionProps = {}) {
+  const { data, client, ownerId, run } = useFinance();
+  const [localMonth, setLocalMonth] = useState(monthStart(todayInIndia()));
+  const month = selectedMonth ?? localMonth;
+  const setMonth = onMonthChange ?? setLocalMonth;
   const [name, setName] = useState("");
   const [kind, setKind] = useState<PlanItem["kind"]>("fixed_expense");
   const [amount, setAmount] = useState("");
@@ -367,7 +390,7 @@ export function MonthlyPlanView() {
 
   const displayMonth = monthLabel(month);
   return <div className="page-stack">
-    <div className="section-actions"><label className="field">Planning month<input className="input" type="month" value={month.slice(0, 7)} onChange={event => { const selected = monthStartFromInput(event.target.value); if (selected) setMonth(selected); }} /></label><span className="pill">{displayMonth}</span></div>
+    {!onMonthChange && <div className="section-actions"><label className="field">Planning month<input className="input" type="month" value={month.slice(0, 7)} onChange={event => { const selected = monthStartFromInput(event.target.value); if (selected) setMonth(selected); }} /></label><span className="pill">{displayMonth}</span></div>}
     {!plan ? <Section title={`Create your ${displayMonth} plan`} description="Choose how you want to start. Previous actual transactions will never be copied.">
       <div className="choice-grid"><button className="choice-card" disabled={!previousPlan} onClick={() => void createPlan(true)}><strong>Copy previous month and edit</strong><span>{previousPlan ? "Bring forward planned lines and amounts. Review before using them." : "No previous month's plan exists yet."}</span></button><button className="choice-card" onClick={() => void createPlan(false)}><strong>Create from scratch</strong><span>Start with a blank monthly plan.</span></button></div>
       {localError && <p className="form-error" role="alert">{localError}</p>}
@@ -387,7 +410,7 @@ export function MonthlyPlanView() {
           const linked = Boolean(item.recurring_template_id);
           const paid = data.transactions.some(transaction => transaction.plan_item_id === item.id && transaction.kind === "expense" && !data.transactions.some(reversal => reversal.reverses_transaction_id === transaction.id));
           const occurrence = linked ? data.recurringOccurrences.find(row => row.template_id === item.recurring_template_id && row.month_start === month) : null;
-          return <div className="list-row" key={item.id}><span><strong>{item.name}</strong><span className="muted"> · {formatMoney(Number(item.planned_paise))} planned · {data.categories.find(category => category.id === item.category_id)?.name || "Expense"}</span></span><span className="list-actions">{paid || occurrence?.status === "completed" ? <span className="pill">Used</span> : linked ? <a className="button button-secondary button-small" href="/recurring">Mark paid in Recurring</a> : <><button className="button button-secondary button-small" disabled={plan.status !== "active" || !item.funding_account_id || month > monthStart(todayInIndia())} onClick={() => reviewPlanPayment(item)}>Mark used</button>{linkCandidates(item).length > 0 && <button className="button button-quiet button-small" onClick={() => { setLinkingItem(item); setLinkTransactionId(""); setLocalError(""); }}>Use recorded transaction</button>}</>}</span></div>;
+          return <div className="list-row" key={item.id}><span><strong>{item.name}</strong><span className="muted"> · {formatMoney(Number(item.planned_paise))} planned · {data.categories.find(category => category.id === item.category_id)?.name || "Expense"}</span></span><span className="list-actions">{paid || occurrence?.status === "completed" ? <span className="pill">Used</span> : linked ? <a className="button button-secondary button-small" href="#recurring">Mark paid in Recurring</a> : <><button className="button button-secondary button-small" disabled={plan.status !== "active" || !item.funding_account_id || month > monthStart(todayInIndia())} onClick={() => reviewPlanPayment(item)}>Mark used</button>{linkCandidates(item).length > 0 && <button className="button button-quiet button-small" onClick={() => { setLinkingItem(item); setLinkTransactionId(""); setLocalError(""); }}>Use recorded transaction</button>}</>}</span></div>;
         })}</div>
       </Section>
       <Section title="Add a planned item"><form className="form-stack" onSubmit={addItem}><div className="form-grid">
@@ -407,9 +430,11 @@ export function MonthlyPlanView() {
   </div>;
 }
 
-export function RecurringView() {
+export function RecurringView({ month: selectedMonth, onMonthChange }: PlanningSectionProps = {}) {
   const { data, ownerId, client, run, refresh } = useFinance();
-  const [month, setMonth] = useState(monthStart(todayInIndia()));
+  const [localMonth, setLocalMonth] = useState(monthStart(todayInIndia()));
+  const month = selectedMonth ?? localMonth;
+  const setMonth = onMonthChange ?? setLocalMonth;
   const [name, setName] = useState("");
   const [kind, setKind] = useState<TransactionKind>("expense");
   const [amount, setAmount] = useState("");
@@ -512,7 +537,7 @@ export function RecurringView() {
     return <div className="list-row" key={occurrence.id}><div><strong>{template?.name || "Recurring item"}</strong><div className="muted">Due {occurrence.due_on} · {template?.kind || "expense"}</div></div><div className="list-actions"><strong>{formatMoney(Number(occurrence.expected_amount_paise))}</strong><span className="pill">{occurrence.status}</span>{occurrence.status === "pending" && <><button className="button button-secondary" disabled={busyOccurrence === occurrence.id} onClick={() => reviewPayment(occurrence)}>Mark paid</button><button className="button button-quiet" onClick={() => void run(async () => { const { error } = await client.rpc("set_recurring_occurrence_status", { p_occurrence_id: occurrence.id, p_status: "skipped" }); if (error) throw error; }).catch(() => {})}>Skip</button></>}{occurrence.status === "skipped" && <button className="button button-quiet" onClick={() => void run(async () => { const { error } = await client.rpc("set_recurring_occurrence_status", { p_occurrence_id: occurrence.id, p_status: "pending" }); if (error) throw error; }).catch(() => {})}>Restore</button>}</div></div>;
   }
   return <div className="page-stack">
-    <div className="section-actions"><MonthPicker month={month} onChange={setMonth} /></div>
+    {!onMonthChange && <div className="section-actions"><MonthPicker month={month} onChange={setMonth} /></div>}
     {overdueElsewhere.length > 0 && <Section title="Overdue from other months" description="Record these on the actual payment date or skip them; they stay visible until resolved."><div className="list-stack">{overdueElsewhere.map(occurrenceRow)}</div></Section>}
     <Section title={`Expected in ${monthLabel(month)}`} description="Recurring items are reminders until you mark an occurrence paid or received.">
       {occurrences.length ? <div className="list-stack">{occurrences.map(occurrenceRow)}</div> : <Empty text="No recurring items scheduled for this month." />}

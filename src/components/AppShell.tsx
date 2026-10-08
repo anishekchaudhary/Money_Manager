@@ -7,7 +7,6 @@ export type NavIcon =
   | "plan"
   | "accounts"
   | "goals"
-  | "recurring"
   | "reports"
   | "alerts"
   | "settings";
@@ -33,10 +32,9 @@ export interface AppShellProps {
 const defaultNavigation: NavigationItem[] = [
   { label: "Dashboard", href: "/", icon: "dashboard", mobile: true },
   { label: "Transactions", href: "/transactions", icon: "transactions", mobile: true },
-  { label: "Monthly plan", href: "/plan", icon: "plan", mobile: true },
+  { label: "Planning", href: "/plan", icon: "plan", mobile: true },
   { label: "Goals", href: "/goals", icon: "goals", mobile: true },
   { label: "Accounts", href: "/accounts", icon: "accounts" },
-  { label: "Recurring", href: "/recurring", icon: "recurring" },
   { label: "Reports", href: "/reports", icon: "reports" },
   { label: "Alerts", href: "/alerts", icon: "alerts" },
   { label: "Settings", href: "/settings", icon: "settings" },
@@ -66,8 +64,6 @@ function Icon({ name, size = 20 }: { name: NavIcon; size?: number }) {
       return <svg {...shared}><rect x="3" y="6" width="18" height="14" rx="2" /><path d="M3 10h18M16 15h2" /></svg>;
     case "goals":
       return <svg {...shared}><circle cx="12" cy="12" r="9" /><circle cx="12" cy="12" r="5" /><circle cx="12" cy="12" r="1" /></svg>;
-    case "recurring":
-      return <svg {...shared}><path d="M20 11a8 8 0 0 0-14.9-3M4 4v4h4M4 13a8 8 0 0 0 14.9 3M20 20v-4h-4" /></svg>;
     case "reports":
       return <svg {...shared}><path d="M4 20V9M10 20V4M16 20v-7M22 20v-9M2 20h20" /></svg>;
     case "alerts":
