@@ -206,8 +206,6 @@ export function DashboardView({ data, onDismissAlert, onSnoozeAlert }: Dashboard
       {activeAlerts.length > 3 && <p className="muted" style={{ margin: "10px 0 0", fontSize: ".76rem" }}>And {activeAlerts.length - 3} more in Alerts.</p>}
     </section>
 
-    <section style={sectionStyle}><StackedFlowChart flows={flows} /></section>
-
     <section style={sectionStyle}>
       <div className="section-heading"><div><h2>Usable cash</h2><p>Bank and physical cash left after goals, unpaid commitments and credit-card debt</p></div><a href="/plan">Manage monthly plan →</a></div>
       <div className="surface-card dashboard-liquidity">
@@ -219,6 +217,8 @@ export function DashboardView({ data, onDismissAlert, onSnoozeAlert }: Dashboard
       {liquidity.cardDebtPaise > 0 && <p className="muted dashboard-global-note">Credit-card debt is deducted from the total above, not assigned to a particular bank or cash account. Scheduled card repayments are not deducted again.</p>}
       {liquidity.usablePaise < 0 && <p className="notice-banner dashboard-notice">Your goals, unpaid commitments and card debt exceed current bank and cash balances. Review the allocations and plan before spending.</p>}
     </section>
+
+    <section style={sectionStyle}><StackedFlowChart flows={flows} /></section>
 
     <section style={sectionStyle}>
       <div className="section-heading"><div><h2>Where your money is</h2><p>Each account or investment, with its current location and purpose</p></div><a href="/accounts">Manage accounts →</a></div>
