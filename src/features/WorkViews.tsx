@@ -862,31 +862,28 @@ export function SettingsView() {
     } catch (error) { setLocalError(errorText(error)); }
   }
 
-  async function removeCategory(category: FinanceData["categories"][number]) {
+  async function archiveCategory(category: FinanceData["categories"][number]) {
     setLocalError(""); setLocalSuccess("");
     const linkedRecurring = data.recurringTemplates.some(item => item.category_id === category.id);
     const currentMonth = monthStart(todayInIndia());
     const currentOrFuturePlan = data.planItems.some(item => item.category_id === category.id && data.monthlyPlans.some(plan => plan.id === item.plan_id && plan.month_start >= currentMonth));
     if (linkedRecurring || currentOrFuturePlan) {
-      setLocalError(`“${category.name}” is used by a recurring item or a current/future monthly plan. Change those items to another category before removing it.`);
+      setLocalError(`“${category.name}” is used by a recurring item or a current/future monthly plan. Change those items to another category before archiving it.`);
       return;
     }
-    const referenced = categoryIsReferenced(category.id);
-    const action = referenced ? "archive it so past records keep their category" : "permanently delete it";
-    if (!window.confirm(`Remove “${category.name}”? This will ${action}.`)) return;
+    if (!window.confirm(`Archive “${category.name}”? It will be hidden from active categories and new entry forms. Past records will keep it.`)) return;
     try {
-      if (referenced) await run(() => updateRow(client, "categories", category.id, { active: false }, category.version));
-      else await run(() => deleteRow(client, "categories", category.id));
+      await run(() => updateRow(client, "categories", category.id, { active: false }, category.version));
       if (editingCategoryId === category.id) setEditingCategoryId(null);
-      setLocalSuccess(referenced ? `“${category.name}” archived. Past records are unchanged.` : `“${category.name}” deleted.`);
+      setLocalSuccess(`“${category.name}” archived. Past records are unchanged.`);
     } catch (error) { setLocalError(errorText(error)); }
   }
 
-  async function restoreCategory(category: FinanceData["categories"][number]) {
+  async function unarchiveCategory(category: FinanceData["categories"][number]) {
     setLocalError(""); setLocalSuccess("");
     try {
       await run(() => updateRow(client, "categories", category.id, { active: true }, category.version));
-      setLocalSuccess(`“${category.name}” restored.`);
+      setLocalSuccess(`“${category.name}” unarchived.`);
     } catch (error) { setLocalError(errorText(error)); }
   }
 
@@ -900,8 +897,10 @@ export function SettingsView() {
     ];
     setLocalError("");
     try { await run(async () => {
-      for (const item of defaults) if (!data.categories.some(existing => existing.name.toLowerCase() === item.name.toLowerCase() && existing.kind === item.kind)) {
-        await insertRow(client, "categories", ownerId, { id: crypto.randomUUID(), ...item, active: true });
+      for (const item of defaults) {
+        const existing = data.categories.find(category => category.name.toLowerCase() === item.name.toLowerCase() && category.kind === item.kind);
+        if (existing && !existing.active) await updateRow(client, "categories", existing.id, { active: true }, existing.version);
+        else if (!existing) await insertRow(client, "categories", ownerId, { id: crypto.randomUUID(), ...item, active: true });
       }
     }); }
     catch (error) { setLocalError(errorText(error)); }
@@ -962,18 +961,21 @@ export function SettingsView() {
   const count = Object.values(BACKUP_TABLES).reduce((sum, table) => sum + (preview?.tables[table]?.length || 0), 0);
   const previewData = preview ? Object.fromEntries(Object.entries(BACKUP_TABLES).map(([key, table]) => [key, preview.tables[table]])) as unknown as FinanceData : null;
   const previewTotals = previewData ? totalsOn(previewData) : null;
+  const activeCategories = data.categories.filter(item => item.active);
+  const archivedCategories = data.categories.filter(item => !item.active);
   return <div className="page-stack">
     <div className="two-column-grid">
-      <Section title="Categories" description="Edit names here, or remove categories you no longer use. Categories with past records are archived to preserve history.">
+      <Section title="Categories" description="Edit active categories or archive ones you no longer use. Archived categories are hidden from new entry forms but stay in past records.">
         <button className="button button-secondary" onClick={() => void addDefaults()}>Add suggested categories</button>
         <form className="form-stack inline-form" onSubmit={addCategory}><div className="form-grid"><label className="field">Name<input className="input" required value={categoryName} onChange={event => setCategoryName(event.target.value)} /></label><label className="field">Type<select className="select" value={categoryKind} onChange={event => setCategoryKind(event.target.value as "income" | "expense")}><option value="expense">Expense</option><option value="income">Income</option></select></label></div><button className="button button-primary">Add category</button></form>
-        {data.categories.length ? <div className="list-stack category-list">{data.categories.map(item => <div className="list-row category-row" key={item.id}>
+        {activeCategories.length ? <div className="list-stack category-list">{activeCategories.map(item => <div className="list-row category-row" key={item.id}>
           {editingCategoryId === item.id ? <form className="form-stack category-edit-form" onSubmit={saveCategoryEdit}>
             <div className="form-grid"><label className="field">Name<input className="input" required maxLength={100} value={editingCategoryName} onChange={event => setEditingCategoryName(event.target.value)} /></label><label className="field">Type<select className="select" disabled={categoryIsReferenced(item.id)} value={editingCategoryKind} onChange={event => setEditingCategoryKind(event.target.value as "income" | "expense")}><option value="expense">Expense</option><option value="income">Income</option></select></label></div>
             {categoryIsReferenced(item.id) && <p className="muted">Type cannot change while this category has linked records.</p>}
             <div className="list-actions"><button className="button button-primary" type="submit">Save</button><button className="button button-quiet" type="button" onClick={() => setEditingCategoryId(null)}>Cancel</button></div>
-          </form> : <><span><strong>{item.name}</strong><span className="muted"> · {item.kind}</span>{!item.active && <span className="pill">Archived</span>}</span><span className="list-actions"><button className="button button-quiet" type="button" onClick={() => startCategoryEdit(item)}>Edit</button>{item.active ? <button className="button button-quiet" type="button" onClick={() => void removeCategory(item)}>Remove</button> : <button className="button button-quiet" type="button" onClick={() => void restoreCategory(item)}>Restore</button>}</span></>}
-        </div>)}</div> : <Empty text="No categories yet." />}
+          </form> : <><span><strong>{item.name}</strong><span className="muted"> · {item.kind}</span></span><span className="list-actions"><button className="button button-quiet" type="button" onClick={() => startCategoryEdit(item)}>Edit</button><button className="button button-quiet" type="button" onClick={() => void archiveCategory(item)}>Archive</button></span></>}
+        </div>)}</div> : <Empty text="No active categories. Add one above or unarchive a previous category." />}
+        {archivedCategories.length > 0 && <details className="archived-categories"><summary>Archived categories ({archivedCategories.length})</summary><div className="list-stack">{archivedCategories.map(item => <div className="list-row category-row" key={item.id}><span><strong>{item.name}</strong><span className="muted"> · {item.kind}</span></span><button className="button button-quiet" type="button" onClick={() => void unarchiveCategory(item)}>Unarchive</button></div>)}</div></details>}
       </Section>
       <Section title="Account security" description="Only the owner account can access this application's financial data."><p>Signed in as the private owner. Sync status: <strong>{syncStatus}</strong>.</p><p>{pending.length} unsynced transaction{pending.length === 1 ? "" : "s"} on this device.</p><form className="form-stack" onSubmit={changePassword}><label className="field">New password<input className="input" type="password" minLength={12} autoComplete="new-password" value={newPassword} onChange={event => setNewPassword(event.target.value)} /></label><button className="button button-secondary">Update password</button></form><button className="button button-quiet" onClick={() => void signOut()}>Sign out</button></Section>
     </div>

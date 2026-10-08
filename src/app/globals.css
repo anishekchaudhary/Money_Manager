@@ -261,6 +261,9 @@ svg { display: block; }
 .category-row .pill { margin-left: 8px; }
 .category-edit-form { width: 100%; }
 .category-edit-form .muted { margin: 0; }
+.archived-categories { margin-top: 18px; border-top: 1px solid var(--line); padding-top: 14px; }
+.archived-categories summary { color: var(--ink-soft); font-size: .79rem; font-weight: 680; cursor: pointer; }
+.archived-categories .list-stack { margin-top: 12px; }
 .tag-list { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 16px; }
 .goal-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 270px), 1fr)); align-items: start; gap: 16px; }
 .goal-card-actions { display: flex; flex-wrap: wrap; gap: 5px; padding: 11px 0 0; }
