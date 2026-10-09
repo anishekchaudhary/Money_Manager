@@ -16,6 +16,7 @@ export interface GoalCardProps {
   status?: "active" | "paused" | "completed";
   completedSpentPaise?: number;
   completedOn?: string | null;
+  notes?: string | null;
   href?: string;
   children?: ReactNode;
 }
@@ -30,6 +31,7 @@ export function GoalCard({
   status = "active",
   completedSpentPaise,
   completedOn,
+  notes,
   href,
   children,
 }: GoalCardProps) {
@@ -42,6 +44,7 @@ export function GoalCard({
       <div className="goal-card-amount"><strong>{formatMoney(completedSpentPaise ?? 0)}</strong><span>recorded spending</span></div>
       <div className="goal-card-facts">{targetPaise !== null && <div><span>Original target</span><strong>{formatMoney(targetPaise)}</strong></div>}{completedOn && <div><span>Completed on</span><strong>{new Date(completedOn).toLocaleDateString("en-IN")}</strong></div>}</div>
       {allocations.length > 0 && <div className="goal-card-sources"><span className="goal-card-sources-title">Paid from</span>{allocations.map((allocation, index) => <div className="goal-card-source" key={`${allocation.source}-${index}`}><span>{allocation.source}</span><strong>{formatMoney(allocation.amountPaise)}</strong></div>)}</div>}
+      {notes && <p className="goal-card-notes">{notes}</p>}
       {children}
     </article>
   );
@@ -70,6 +73,7 @@ export function GoalCard({
           {allocations.map((allocation, index) => <div className="goal-card-source" key={`${allocation.source}-${index}`}><span>{allocation.source}</span><strong>{formatMoney(allocation.amountPaise)}</strong></div>)}
         </div>
       )}
+      {notes && <p className="goal-card-notes">{notes}</p>}
       {children}
     </article>
   );

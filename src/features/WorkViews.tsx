@@ -58,6 +58,13 @@ export function AccountsView() {
   const [kind, setKind] = useState<Account["kind"]>("bank");
   const [opening, setOpening] = useState("0");
   const [openingOn, setOpeningOn] = useState(todayInIndia());
+  const [newAccountNotes, setNewAccountNotes] = useState("");
+  const [editingAccount, setEditingAccount] = useState<Account | null>(null);
+  const [editAccountName, setEditAccountName] = useState("");
+  const [editAccountKind, setEditAccountKind] = useState<Account["kind"]>("bank");
+  const [editAccountOpening, setEditAccountOpening] = useState("");
+  const [editAccountOpeningOn, setEditAccountOpeningOn] = useState("");
+  const [editAccountNotes, setEditAccountNotes] = useState("");
   const [valuationAccount, setValuationAccount] = useState("");
   const [valuationAmount, setValuationAmount] = useState("");
   const [valuationDate, setValuationDate] = useState(todayInIndia());
@@ -69,9 +76,9 @@ export function AccountsView() {
     try {
       await run(() => insertRow(client, "accounts", ownerId, {
         id: crypto.randomUUID(), name: name.trim(), kind,
-        opening_balance_paise: paiseFromRupees(opening), opening_on: openingOn, active: true,
+        opening_balance_paise: paiseFromRupees(opening), opening_on: openingOn, active: true, notes: newAccountNotes.trim() || null,
       }));
-      setName(""); setOpening("0");
+      setName(""); setOpening("0"); setNewAccountNotes("");
     } catch (error) { setLocalError(errorText(error)); }
   }
 
@@ -86,6 +93,43 @@ export function AccountsView() {
     } catch (error) { setLocalError(errorText(error)); }
   }
 
+  function startAccountEdit(account: Account) {
+    setEditingAccount(account);
+    setEditAccountName(account.name);
+    setEditAccountKind(account.kind);
+    setEditAccountOpening(rupeesFromPaise(Number(account.opening_balance_paise)));
+    setEditAccountOpeningOn(account.opening_on);
+    setEditAccountNotes(account.notes || "");
+    setLocalError("");
+  }
+
+  const accountHasEntries = editingAccount ? data.entries.some(item => item.account_id === editingAccount.id) : false;
+  const accountHasLinks = editingAccount ? data.goalAllocations.some(item => item.account_id === editingAccount.id)
+    || data.investmentValuations.some(item => item.account_id === editingAccount.id)
+    || data.planItems.some(item => item.account_id === editingAccount.id || item.funding_account_id === editingAccount.id)
+    || data.recurringTemplates.some(item => item.source_account_id === editingAccount.id || item.destination_account_id === editingAccount.id) : false;
+
+  async function saveAccountEdit(event: FormEvent) {
+    event.preventDefault(); setLocalError("");
+    if (!editingAccount) return;
+    try {
+      const nextName = editAccountName.trim();
+      if (!nextName) throw new Error("Enter an account name.");
+      const nextOpening = paiseFromRupees(editAccountOpening);
+      if (accountHasEntries && (nextOpening !== Number(editingAccount.opening_balance_paise) || editAccountOpeningOn !== editingAccount.opening_on || editAccountKind !== editingAccount.kind)) {
+        throw new Error("Opening amount, start date, and type cannot change after transactions. You can still edit the name and notes.");
+      }
+      if (accountHasLinks && editAccountKind !== editingAccount.kind) throw new Error("Account type cannot change while linked to goals, valuations, plans, or recurring items.");
+      const changes: Record<string, unknown> = { name: nextName, notes: editAccountNotes.trim() || null };
+      if (!accountHasEntries) { changes.opening_balance_paise = nextOpening; changes.opening_on = editAccountOpeningOn; }
+      if (!accountHasEntries && !accountHasLinks) changes.kind = editAccountKind;
+      const financialChange = nextOpening !== Number(editingAccount.opening_balance_paise) || editAccountOpeningOn !== editingAccount.opening_on || editAccountKind !== editingAccount.kind;
+      if (financialChange && !window.confirm(`Update ${editingAccount.name}'s opening details? This can change displayed balances. Review the amount, date, and type before continuing.`)) return;
+      await run(() => updateRow(client, "accounts", editingAccount.id, changes, editingAccount.version));
+      setEditingAccount(null);
+    } catch (error) { setLocalError(errorText(error)); }
+  }
+
   const investmentAccounts = data.accounts.filter(account => account.kind === "investment");
   return <div className="page-stack">
     <div className="stat-grid"><StatCard label="Cash and bank" valuePaise={totals.cash} /><StatCard label="Investments" valuePaise={totals.investments} /><StatCard label="Debts" valuePaise={totals.debts} /><StatCard label="Net worth" valuePaise={totals.netWorth} tone="accent" /></div>
@@ -95,15 +139,22 @@ export function AccountsView() {
         const reserved = data.goalAllocations.filter(allocation => allocation.account_id === account.id).reduce((sum, allocation) => sum + goalAllocationValue(allocation, account, balance), 0);
         const latestValuation = account.kind === "investment" ? data.investmentValuations.filter(item => item.account_id === account.id).sort((a, b) => b.as_of_date.localeCompare(a.as_of_date) || (b.created_at || "").localeCompare(a.created_at || ""))[0] : null;
         const canArchive = Math.abs(balance) < 1 && !data.goalAllocations.some(allocation => allocation.account_id === account.id);
-        return <tr key={account.id}><td><strong>{account.name}</strong>{latestValuation && <small className="muted"> · valued {latestValuation.as_of_date}</small>}{!account.active && <span className="pill">Archived</span>}</td><td>{account.kind}</td><td>{formatMoney(balance)}</td><td>{formatMoney(reserved)}</td><td>{account.kind === "bank" || account.kind === "cash" ? formatMoney(availableCash(account, data, totals.balances)) : "—"}</td><td>{account.active && <button className="button button-quiet" disabled={!canArchive} title={canArchive ? "Archive this empty account" : "Bring the balance to zero and release goal allocations first"} onClick={() => { if (window.confirm(`Archive ${account.name}? Its history stays in reports.`)) void run(() => updateRow(client, "accounts", account.id, { active: false }, account.version)).catch(() => {}); }}>Archive</button>}</td></tr>;
+        return <tr key={account.id}><td><strong>{account.name}</strong>{account.notes && <small className="account-note">{account.notes}</small>}{latestValuation && <small className="muted"> · valued {latestValuation.as_of_date}</small>}{!account.active && <span className="pill">Archived</span>}</td><td>{account.kind}</td><td>{formatMoney(balance)}</td><td>{formatMoney(reserved)}</td><td>{account.kind === "bank" || account.kind === "cash" ? formatMoney(availableCash(account, data, totals.balances)) : "—"}</td><td><span className="list-actions"><button className="button button-quiet" onClick={() => startAccountEdit(account)}>Edit</button>{account.active && <button className="button button-quiet" disabled={!canArchive} title={canArchive ? "Archive this empty account" : "Bring the balance to zero and release goal allocations first"} onClick={() => { if (window.confirm(`Archive ${account.name}? Its history stays in reports.`)) void run(() => updateRow(client, "accounts", account.id, { active: false }, account.version)).catch(() => {}); }}>Archive</button>}</span></td></tr>;
       })}</tbody></table></div>}
     </Section>
+    {editingAccount && <Section title={`Edit ${editingAccount.name}`} description="Names and notes can be changed anytime. Opening details are locked after transactions; account type is also locked while linked elsewhere."><form className="form-stack" onSubmit={saveAccountEdit}><div className="form-grid">
+      <label className="field">Name<input className="input" required maxLength={100} value={editAccountName} onChange={event => setEditAccountName(event.target.value)} /></label>
+      <label className="field">Type<select className="select" disabled={accountHasEntries || accountHasLinks} value={editAccountKind} onChange={event => setEditAccountKind(event.target.value as Account["kind"])}><option value="bank">Bank</option><option value="cash">Cash</option><option value="investment">Investment holding</option><option value="card">Credit card debt</option><option value="loan">Loan debt</option></select></label>
+      <label className="field">Opening balance / amount owed (₹)<input className="input" type="number" min="0" step="0.01" required disabled={accountHasEntries} value={editAccountOpening} onChange={event => setEditAccountOpening(event.target.value)} /></label>
+      <label className="field">As of date<input className="input" type="date" max={todayInIndia()} required disabled={accountHasEntries} value={editAccountOpeningOn} onChange={event => setEditAccountOpeningOn(event.target.value)} /></label>
+    </div><label className="field">Notes (optional)<textarea className="input" rows={3} value={editAccountNotes} onChange={event => setEditAccountNotes(event.target.value)} /></label>{localError && <p className="form-error" role="alert">{localError}</p>}<div className="section-actions"><button className="button button-primary">Save account</button><button type="button" className="button button-quiet" onClick={() => setEditingAccount(null)}>Cancel</button></div></form></Section>}
     <div className="two-column-grid">
       <Section title="Add an account" description="Enter the amount on the date you start tracking it. Opening balances are not income."><form className="form-stack" onSubmit={createAccount}>
         <label className="field">Name<input className="input" required maxLength={80} placeholder="e.g. Savings Account" value={name} onChange={e => setName(e.target.value)} /></label>
         <label className="field">Type<select className="select" value={kind} onChange={e => setKind(e.target.value as Account["kind"])}><option value="bank">Bank</option><option value="cash">Cash</option><option value="investment">Investment holding</option><option value="card">Credit card debt</option><option value="loan">Loan debt</option></select></label>
         {amountInput(opening, setOpening, "Opening balance / amount owed (₹)")}
         <label className="field">As of date<input className="input" type="date" max={todayInIndia()} required value={openingOn} onChange={e => setOpeningOn(e.target.value)} /></label>
+        <label className="field">Notes (optional)<textarea className="input" rows={3} value={newAccountNotes} onChange={e => setNewAccountNotes(e.target.value)} /></label>
         <button className="button button-primary">Add account</button>
       </form></Section>
       <Section title="Update investment value" description="Enter a manual current value. The app will show the valuation date; this is not a live market quote.">
@@ -115,7 +166,7 @@ export function AccountsView() {
         </form> : <Empty text="Add an investment holding to record its value." />}
       </Section>
     </div>
-    {localError && <p className="form-error" role="alert">{localError}</p>}
+    {localError && !editingAccount && <p className="form-error" role="alert">{localError}</p>}
   </div>;
 }
 
@@ -576,6 +627,13 @@ export function GoalsView() {
   const [target, setTarget] = useState("");
   const [targetOn, setTargetOn] = useState("");
   const [monthly, setMonthly] = useState("");
+  const [newGoalNotes, setNewGoalNotes] = useState("");
+  const [editingGoalId, setEditingGoalId] = useState<string | null>(null);
+  const [editGoalName, setEditGoalName] = useState("");
+  const [editGoalTarget, setEditGoalTarget] = useState("");
+  const [editGoalTargetOn, setEditGoalTargetOn] = useState("");
+  const [editGoalMonthly, setEditGoalMonthly] = useState("");
+  const [editGoalNotes, setEditGoalNotes] = useState("");
   const [quickAccount, setQuickAccount] = useState("");
   const [quickAmount, setQuickAmount] = useState("");
   const [excludedQuickGoals, setExcludedQuickGoals] = useState<string[]>([]);
@@ -608,9 +666,38 @@ export function GoalsView() {
       await run(() => insertRow(client, "goals", ownerId, {
         id: crypto.randomUUID(), name: name.trim(), target_paise: target ? paiseFromRupees(target) : null,
         target_on: targetOn || null, monthly_contribution_paise: monthly ? paiseFromRupees(monthly) : null,
-        status: "active", notes: null,
+        status: "active", notes: newGoalNotes.trim() || null,
       }));
-      setName(""); setTarget(""); setTargetOn(""); setMonthly("");
+      setName(""); setTarget(""); setTargetOn(""); setMonthly(""); setNewGoalNotes("");
+    } catch (error) { setLocalError(errorText(error)); }
+  }
+
+  function startGoalEdit(goal: Goal) {
+    setEditingGoalId(goal.id);
+    setEditGoalName(goal.name);
+    setEditGoalTarget(goal.target_paise === null ? "" : rupeesFromPaise(Number(goal.target_paise)));
+    setEditGoalTargetOn(goal.target_on || "");
+    setEditGoalMonthly(goal.monthly_contribution_paise === null ? "" : rupeesFromPaise(Number(goal.monthly_contribution_paise)));
+    setEditGoalNotes(goal.notes || "");
+    setAllocationGoal(""); setLocalError("");
+  }
+
+  async function saveGoalEdit(event: FormEvent) {
+    event.preventDefault(); setLocalError("");
+    const goal = data.goals.find(item => item.id === editingGoalId);
+    if (!goal) return;
+    try {
+      const nextName = editGoalName.trim();
+      if (!nextName) throw new Error("Enter a goal name.");
+      const changes: Record<string, unknown> = { name: nextName, notes: editGoalNotes.trim() || null };
+      if (goal.status !== "completed") {
+        changes.target_paise = editGoalTarget ? paiseFromRupees(editGoalTarget) : null;
+        if (changes.target_paise === 0) throw new Error("A goal target must be positive or blank.");
+        changes.target_on = editGoalTargetOn || null;
+        changes.monthly_contribution_paise = editGoalMonthly ? paiseFromRupees(editGoalMonthly) : null;
+      }
+      await run(() => updateRow(client, "goals", goal.id, changes, goal.version));
+      setEditingGoalId(null);
     } catch (error) { setLocalError(errorText(error)); }
   }
 
@@ -644,11 +731,13 @@ export function GoalsView() {
 
   function toggleAllocation(goalId: string) {
     setLocalError("");
+    setEditingGoalId(null);
     setAllocationGoal(current => current === goalId ? "" : goalId);
     setAllocationAccount(""); setAllocationMode("total"); setAllocationValue("");
   }
 
   function openCompletion(goal: Goal) {
+    setEditingGoalId(null);
     setCompleting(goal);
     setPayments([{ key: crypto.randomUUID(), accountId: "", amount: "", method: "", categoryId: "" }]);
     setReductions({}); setUnreservedUses({}); setCompletionNote(""); setLocalError("");
@@ -745,8 +834,17 @@ export function GoalsView() {
       const allocations = data.goalAllocations.filter(item => item.goal_id === goal.id).map(item => ({ source: data.accounts.find(account => account.id === item.account_id)?.name || "Account", amountPaise: goalAllocationValue(item, data.accounts.find(account => account.id === item.account_id), balances.get(item.account_id) || 0) }));
       const completion = data.goalCompletions.find(item => item.goal_id === goal.id);
       if (completion) for (const payment of data.goalCompletionPayments.filter(item => item.completion_id === completion.id)) { const transaction = data.transactions.find(item => item.id === payment.transaction_id); if (transaction) allocations.push({ source: `${data.accounts.find(account => account.id === transaction.source_account_id)?.name || "Account"} · ${payment.payment_method}`, amountPaise: Number(transaction.amount_paise) }); }
-      return <GoalCard key={goal.id} name={goal.name} targetPaise={goal.target_paise === null ? null : Number(goal.target_paise)} fundedPaise={funded} monthlySavingPaise={goal.monthly_contribution_paise === null ? null : Number(goal.monthly_contribution_paise)} estimatedCompletion={goal.status === "completed" ? undefined : projectedGoalDate(goal, funded) || undefined} allocations={allocations} status={goal.status === "completed" ? "completed" : goal.status === "paused" ? "paused" : "active"} completedSpentPaise={completion ? Number(completion.total_spent_paise) : undefined} completedOn={goal.completed_at}>
-        {(goal.status === "active" || goal.status === "paused") && <><div className="goal-card-actions"><button type="button" className="button button-secondary" aria-expanded={allocationGoal === goal.id} onClick={() => toggleAllocation(goal.id)}>{allocationGoal === goal.id ? "Close assignment" : "Assign money"}</button><button type="button" className="button button-secondary" onClick={() => openCompletion(goal)}>Complete and record spending</button>{goal.status === "active" ? <button type="button" className="button button-quiet" onClick={() => void run(() => updateRow(client, "goals", goal.id, { status: "paused" }, goal.version)).catch(() => {})}>Pause</button> : <button type="button" className="button button-quiet" onClick={() => void run(() => updateRow(client, "goals", goal.id, { status: "active" }, goal.version)).catch(() => {})}>Resume</button>}</div>
+      return <GoalCard key={goal.id} name={goal.name} targetPaise={goal.target_paise === null ? null : Number(goal.target_paise)} fundedPaise={funded} monthlySavingPaise={goal.monthly_contribution_paise === null ? null : Number(goal.monthly_contribution_paise)} estimatedCompletion={goal.status === "completed" ? undefined : projectedGoalDate(goal, funded) || undefined} allocations={allocations} status={goal.status === "completed" ? "completed" : goal.status === "paused" ? "paused" : "active"} completedSpentPaise={completion ? Number(completion.total_spent_paise) : undefined} completedOn={goal.completed_at} notes={goal.notes}>
+        <div className="goal-card-actions"><button type="button" className="button button-quiet" aria-expanded={editingGoalId === goal.id} onClick={() => editingGoalId === goal.id ? setEditingGoalId(null) : startGoalEdit(goal)}>{editingGoalId === goal.id ? "Close edit" : "Edit"}</button>{(goal.status === "active" || goal.status === "paused") && <><button type="button" className="button button-secondary" aria-expanded={allocationGoal === goal.id} onClick={() => toggleAllocation(goal.id)}>{allocationGoal === goal.id ? "Close assignment" : "Assign money"}</button><button type="button" className="button button-secondary" onClick={() => openCompletion(goal)}>Complete and record spending</button>{goal.status === "active" ? <button type="button" className="button button-quiet" onClick={() => void run(() => updateRow(client, "goals", goal.id, { status: "paused" }, goal.version)).catch(() => {})}>Pause</button> : <button type="button" className="button button-quiet" onClick={() => void run(() => updateRow(client, "goals", goal.id, { status: "active" }, goal.version)).catch(() => {})}>Resume</button>}</>}</div>
+        {editingGoalId === goal.id && <form className="form-stack goal-inline-form" onSubmit={saveGoalEdit} aria-label={`Edit ${goal.name}`}>
+          <label className="field">Name<input className="input" required maxLength={100} value={editGoalName} onChange={event => setEditGoalName(event.target.value)} /></label>
+          {goal.status !== "completed" && <><label className="field">Target (₹, optional)<input className="input" type="number" min="0.01" step="0.01" value={editGoalTarget} onChange={event => setEditGoalTarget(event.target.value)} /></label><label className="field">Target date (optional)<input className="input" type="date" value={editGoalTargetOn} onChange={event => setEditGoalTargetOn(event.target.value)} /></label><label className="field">Planned monthly saving (₹, optional)<input className="input" type="number" min="0" step="0.01" value={editGoalMonthly} onChange={event => setEditGoalMonthly(event.target.value)} /></label></>}
+          {goal.status === "completed" && <p className="muted">Completed goal targets and plans stay unchanged to preserve their recorded history.</p>}
+          <label className="field">Notes (optional)<textarea className="input" rows={3} value={editGoalNotes} onChange={event => setEditGoalNotes(event.target.value)} /></label>
+          {localError && <p className="form-error" role="alert">{localError}</p>}
+          <div className="section-actions"><button className="button button-primary">Save goal</button><button type="button" className="button button-quiet" onClick={() => setEditingGoalId(null)}>Cancel</button></div>
+        </form>}
+        {(goal.status === "active" || goal.status === "paused") && <>
           {allocationGoal === goal.id && <form className="form-stack goal-inline-form" onSubmit={saveAllocation} aria-label={`Assign money to ${goal.name}`}>
             <p className="muted">Reserve money for this goal without changing the account balance.</p>
             {accountSelect(data.accounts.filter(item => ["cash", "bank", "investment"].includes(item.kind)), allocationAccount, value => { setAllocationAccount(value); const investment = data.accounts.find(item => item.id === value)?.kind === "investment"; if (investment) setAllocationMode("total"); setAllocationValue(investment || allocationMode === "total" ? existingAllocationValue(goal.id, value) : ""); }, "Linked account or holding")}
@@ -763,9 +861,10 @@ export function GoalsView() {
         <label className="field">Target (₹, optional)<input className="input" type="number" min="0.01" step="0.01" value={target} onChange={event => setTarget(event.target.value)} /></label>
         <label className="field">Planned monthly saving (₹, optional)<input className="input" type="number" min="0" step="0.01" value={monthly} onChange={event => setMonthly(event.target.value)} /></label>
         <label className="field">Target date (optional)<input className="input" type="date" value={targetOn} onChange={event => setTargetOn(event.target.value)} /></label>
+        <label className="field">Notes (optional)<textarea className="input" rows={3} value={newGoalNotes} onChange={event => setNewGoalNotes(event.target.value)} /></label>
         <button className="button button-secondary">Create goal</button>
       </form></Section>
-    {localError && !allocationGoal && !completing && <p className="form-error" role="alert">{localError}</p>}
+    {localError && !allocationGoal && !editingGoalId && !completing && <p className="form-error" role="alert">{localError}</p>}
     {completing && <div className="modal-backdrop" role="presentation"><section className="modal-panel surface-card" role="dialog" aria-modal="true" aria-labelledby="complete-title"><div className="section-heading"><div><p className="app-eyebrow">GOAL COMPLETION</p><h2 id="complete-title">Complete {completing.name}</h2><p>Choose exactly where the spending comes from. The app will not take money from other goals without your choice.</p></div><button className="button button-quiet" onClick={() => setCompleting(null)} aria-label="Close">✕</button></div>
       <form className="form-stack" onSubmit={finishGoal}>
         {payments.map((payment, index) => <div className="payment-row" key={payment.key}><h3>Payment {index + 1}</h3><div className="form-grid">

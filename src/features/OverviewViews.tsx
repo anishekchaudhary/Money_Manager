@@ -96,6 +96,7 @@ function GoalList({ data }: OverviewProps) {
       status={goal.status === "completed" ? "completed" : goal.status === "paused" ? "paused" : "active"}
       completedSpentPaise={completion ? Number(completion.total_spent_paise) : undefined}
       completedOn={goal.completed_at}
+      notes={goal.notes}
       href="/goals"
     />;
   })}</div>;

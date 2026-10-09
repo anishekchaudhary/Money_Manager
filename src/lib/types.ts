@@ -18,6 +18,7 @@ export interface Account {
   opening_balance_paise: number;
   opening_on: string;
   active: boolean;
+  notes: string | null;
   created_at?: string;
   updated_at?: string;
   version?: number;
